@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #1c1b22;
+  background: radial-gradient(circle at 20% 20%, #fff0e9, #f7f4f0 40%, #eef2ff 80%);
+}
+
+body {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+[data-testid-visible="true"] [data-testid],
+[data-testid-visible="true"] [data-qa],
+[data-testid-visible="true"] [data-playwright],
+[data-testid-visible="true"] [data-selenium] {
+  outline: 2px dashed #f45b2a;
+  outline-offset: 2px;
+}

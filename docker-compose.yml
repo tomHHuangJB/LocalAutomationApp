@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      FAILURE_RATE: ${FAILURE_RATE:-0}
+      AVERAGE_DELAY_MS: ${AVERAGE_DELAY_MS:-0}
+      ENABLE_WEBSOCKETS: ${ENABLE_WEBSOCKETS:-true}
+      ALLOW_CORS_FROM: ${ALLOW_CORS_FROM:-*}
+      GLOBAL_SEED: ${GLOBAL_SEED:-42}
+      FAILURE_PATTERN: ${FAILURE_PATTERN:-}
+      TIME_SKEW_MS: ${TIME_SKEW_MS:-0}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    profiles: ["stable", "flaky", "slow", "overload"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:3001}
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles: ["stable", "flaky", "slow", "overload"]
+
+  api-docs:
+    image: swaggerapi/swagger-ui:latest
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+    volumes:
+      - ./doc/openapi.yaml:/spec/openapi.yaml:ro
+    ports:
+      - "3002:8080"
+    profiles: ["stable", "flaky", "slow", "overload"]
+
+networks:
+  default:
+    name: automation-lab
