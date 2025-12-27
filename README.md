@@ -159,6 +159,13 @@ Load it in Swagger UI or any OpenAPI viewer to explore request/response shapes.
 - Frontend routes: `/`, `/auth`, `/forms`, `/components`, `/tables`, `/dynamic`, `/errors`, `/performance`, `/a11y`, `/i18n`, `/files`, `/experiments`, `/integrations`, `/system`.
 - Backend health: http://localhost:3001/health
 
+## Mobile Navigation (Test Support)
+- Mobile nav is rendered under a menu button visible on small screens.
+- Stable locators for automation:
+  - `data-testid="mobile-menu-button"`
+  - `data-testid="mobile-nav-<label>"` (example: `mobile-nav-forms`)
+- Desktop nav remains available via `data-testid="nav-<label>"`.
+
 ## Profiles
 Use Docker Compose profiles to simulate test conditions:
 - `stable` (default)

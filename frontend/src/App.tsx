@@ -51,6 +51,18 @@ export default function App() {
         <div className="mx-auto max-w-6xl px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="text-lg font-semibold">Local Automation Lab</div>
+            <div className="flex items-center gap-3 lg:hidden">
+              <button
+                type="button"
+                className="rounded border border-black/20 px-3 py-1 text-sm"
+                aria-haspopup="true"
+                aria-expanded={isMegaMenuOpen}
+                onClick={() => setIsMegaMenuOpen((open) => !open)}
+                data-testid="mobile-menu-button"
+              >
+                Menu
+              </button>
+            </div>
             <nav className="hidden lg:flex items-center gap-4 text-sm">
               <div
                 className="relative group"
@@ -101,6 +113,22 @@ export default function App() {
               ))}
             </nav>
             <div className="text-xs text-black/60">ALT+SHIFT+D</div>
+          </div>
+          <div className={`lg:hidden ${isMegaMenuOpen ? "block" : "hidden"}`}>
+            <div className="mt-3 rounded-xl border border-black/10 bg-white p-3 shadow-sm">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                {navItems.map((item) => (
+                  <NavLink
+                    key={`mobile-${item.path}`}
+                    to={item.path}
+                    className="rounded px-2 py-1 hover:bg-ember/10"
+                    data-testid={`mobile-nav-${item.label.toLowerCase()}`}
+                  >
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </header>
