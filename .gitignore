@@ -1,1 +1,7 @@
 doc/
+backend/node_modules/
+backend/dist/
+backend/package-lock.json
+frontend/node_modules/
+frontend/dist/
+frontend/package-lock.json
