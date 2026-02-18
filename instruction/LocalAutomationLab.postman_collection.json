@@ -1,0 +1,1015 @@
+{
+  "info": {
+    "name": "Local Automation Lab API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "API testing collection generated from doc/openapi.yaml"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"principal.engineer\",\n  \"password\": \"demo\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Refresh",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Sessions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Forgot",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/forgot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "forgot"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reset",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/reset",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Lockout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/lockout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "lockout"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Data",
+      "item": [
+        {
+          "name": "Get Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/data",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "data"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Data",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/data",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "data"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"New Item\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Update Data",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/data/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "data",
+                "1"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Delete Data",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/data/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "data",
+                "1"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Batch",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/batch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "batch"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/flags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "flags"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Pagination",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/pagination",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pagination"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reliability",
+      "item": [
+        {
+          "name": "Idempotent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "demo-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/idempotent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "idempotent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Consistency",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/consistency",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "consistency"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Partial",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/partial",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "partial"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Race Fast",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/race?label=fast&delay=200",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "race"
+              ],
+              "query": [
+                {
+                  "key": "label",
+                  "value": "fast"
+                },
+                {
+                  "key": "delay",
+                  "value": "200"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Race Slow",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/race?label=slow&delay=800",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "race"
+              ],
+              "query": [
+                {
+                  "key": "label",
+                  "value": "slow"
+                },
+                {
+                  "key": "delay",
+                  "value": "800"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Dedup",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/dedup?key=demo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "dedup"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "demo"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flaky",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/flaky",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "flaky"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Slow",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/slow?min=1000&max=2500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "min",
+                  "value": "1000"
+                },
+                {
+                  "key": "max",
+                  "value": "2500"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Large Payload",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/large-payload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "large-payload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Stream (SSE)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "upload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload Chunk",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "upload-id",
+                "value": "upload-123"
+              },
+              {
+                "key": "chunk-index",
+                "value": "1"
+              },
+              {
+                "key": "total-chunks",
+                "value": "5"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/upload/chunk",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "upload",
+                "chunk"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload Complete",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "upload-id",
+                "value": "upload-123"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/upload/complete",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "upload",
+                "complete"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Download",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/download/report?checksum=good",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "download",
+                "report"
+              ],
+              "query": [
+                {
+                  "key": "checksum",
+                  "value": "good"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "Permissions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/permissions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "permissions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Roles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/roles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "roles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Time Skew",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/time-skew",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "time-skew"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reset",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reset",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Seed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/seed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "seed"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seed\": 42\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Security",
+      "item": [
+        {
+          "name": "Injection",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/injection?type=sql&input=SELECT%20*%20FROM%20users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "injection"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "sql"
+                },
+                {
+                  "key": "input",
+                  "value": "SELECT%20*%20FROM%20users"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Access Control",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/access-control?role=viewer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "access-control"
+              ],
+              "query": [
+                {
+                  "key": "role",
+                  "value": "viewer"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "XSS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/xss?mode=sanitized",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "xss"
+              ],
+              "query": [
+                {
+                  "key": "mode",
+                  "value": "sanitized"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Misconfig",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/misconfig",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "misconfig"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vulnerable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/vulnerable",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "vulnerable"
+              ]
+            }
+          }
+        },
+        {
+          "name": "SSRF",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/ssrf?url=http://internal.service",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "ssrf"
+              ],
+              "query": [
+                {
+                  "key": "url",
+                  "value": "http://internal.service"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crypto",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/crypto",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "crypto"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logging",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/logging",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "logging"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Headers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/headers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "headers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Redirect",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/security/redirect?target=/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "security",
+                "redirect"
+              ],
+              "query": [
+                {
+                  "key": "target",
+                  "value": "/"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "CSP Test",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/csp-test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "csp-test"
+              ]
+            }
+          }
+        },
+        {
+          "name": "CSP Report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/csp-report",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "csp-report"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"csp-report\": {\n    \"blocked-uri\": \"inline\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

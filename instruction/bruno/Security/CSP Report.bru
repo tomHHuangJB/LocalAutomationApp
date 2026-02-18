@@ -1,0 +1,17 @@
+meta {
+  name: CSP Report
+  type: http
+  seq: 1
+}
+
+post {
+  url: {baseUrl}/api/csp-report
+}
+
+body:json {
+{
+  "csp-report": {
+    "blocked-uri": "inline"
+  }
+}
+}

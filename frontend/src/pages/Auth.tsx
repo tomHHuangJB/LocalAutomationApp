@@ -1,9 +1,27 @@
 import React, { useState } from "react";
 import Section from "../components/Section";
+import { apiFetch, API_BASE } from "../utils/api";
 
 export default function Auth() {
   const [mfaCode, setMfaCode] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
+  const [authStatus, setAuthStatus] = useState("idle");
+
+  const login = async () => {
+    setAuthStatus("signing-in");
+    const response = await apiFetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "principal.engineer", password: "demo" })
+    }).then((res) => res.json());
+    setAuthStatus(`token:${response.token}`);
+  };
+
+  const verifyMfa = async () => {
+    setAuthStatus("verifying-mfa");
+    const response = await apiFetch(`${API_BASE}/api/auth/refresh`, { method: "POST" }).then((res) => res.json());
+    setAuthStatus(`refresh:${response.refreshToken}`);
+  };
 
   return (
     <div className="space-y-6">
@@ -41,10 +59,14 @@ export default function Auth() {
             type="button"
             className="rounded bg-ember px-4 py-2 text-white"
             data-testid="login-submit"
+            data-playwright="login-submit"
+            data-selenium="login-submit"
+            onClick={login}
           >
             Sign in
           </button>
         </form>
+        <div className="mt-2 text-xs text-black/60" data-testid="auth-status">{authStatus}</div>
       </Section>
 
       <Section title="MFA Flow">
@@ -56,7 +78,11 @@ export default function Auth() {
             placeholder="123456"
             data-testid="mfa-code"
           />
-          <button className="rounded bg-tide px-4 py-2 text-white" data-testid="mfa-verify">
+          <button
+            className="rounded bg-tide px-4 py-2 text-white"
+            onClick={verifyMfa}
+            data-testid="mfa-verify"
+          >
             Verify MFA
           </button>
           <div className="text-sm text-black/60">Expired code handling required.</div>

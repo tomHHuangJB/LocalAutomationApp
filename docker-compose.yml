@@ -1,12 +1,29 @@
 version: "3.9"
 
+x-backend-base: &backend-base
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  ports:
+    - "3001:3001"
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+    interval: 10s
+    timeout: 3s
+    retries: 5
+
+x-frontend-base: &frontend-base
+  build:
+    context: ./frontend
+    dockerfile: Dockerfile
+  ports:
+    - "5173:5173"
+  environment:
+    VITE_API_URL: ${VITE_API_URL:-http://localhost:3001}
+
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "3001:3001"
+    <<: *backend-base
     environment:
       FAILURE_RATE: ${FAILURE_RATE:-0}
       AVERAGE_DELAY_MS: ${AVERAGE_DELAY_MS:-0}
@@ -15,35 +32,81 @@ services:
       GLOBAL_SEED: ${GLOBAL_SEED:-42}
       FAILURE_PATTERN: ${FAILURE_PATTERN:-}
       TIME_SKEW_MS: ${TIME_SKEW_MS:-0}
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-    profiles: ["stable", "flaky", "slow", "overload"]
+    profiles: ["stable"]
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:5173"
-    environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:3001}
+    <<: *frontend-base
     depends_on:
       backend:
         condition: service_healthy
-    profiles: ["stable", "flaky", "slow", "overload"]
+    profiles: ["stable"]
 
   api-docs:
     image: swaggerapi/swagger-ui:latest
     environment:
       SWAGGER_JSON: /spec/openapi.yaml
     volumes:
-      - ./doc/openapi.yaml:/spec/openapi.yaml:ro
+      - ./instruction/openapi.yaml:/spec/openapi.yaml:ro
     ports:
       - "3002:8080"
     profiles: ["stable", "flaky", "slow", "overload"]
+
+  backend-flaky:
+    <<: *backend-base
+    environment:
+      FAILURE_RATE: 0.2
+      AVERAGE_DELAY_MS: 300
+      ENABLE_WEBSOCKETS: "true"
+      ALLOW_CORS_FROM: ${ALLOW_CORS_FROM:-*}
+      GLOBAL_SEED: 42
+      FAILURE_PATTERN: FSSFF
+      TIME_SKEW_MS: 2000
+    profiles: ["flaky"]
+
+  backend-slow:
+    <<: *backend-base
+    environment:
+      FAILURE_RATE: 0.0
+      AVERAGE_DELAY_MS: 2000
+      ENABLE_WEBSOCKETS: "true"
+      ALLOW_CORS_FROM: ${ALLOW_CORS_FROM:-*}
+      GLOBAL_SEED: 42
+      FAILURE_PATTERN: ""
+      TIME_SKEW_MS: 0
+    profiles: ["slow"]
+
+  backend-overload:
+    <<: *backend-base
+    environment:
+      FAILURE_RATE: 0.1
+      AVERAGE_DELAY_MS: 1200
+      ENABLE_WEBSOCKETS: "false"
+      ALLOW_CORS_FROM: ${ALLOW_CORS_FROM:-*}
+      GLOBAL_SEED: 99
+      FAILURE_PATTERN: FFFSS
+      TIME_SKEW_MS: 5000
+    profiles: ["overload"]
+
+  frontend-flaky:
+    <<: *frontend-base
+    depends_on:
+      backend-flaky:
+        condition: service_healthy
+    profiles: ["flaky"]
+
+  frontend-slow:
+    <<: *frontend-base
+    depends_on:
+      backend-slow:
+        condition: service_healthy
+    profiles: ["slow"]
+
+  frontend-overload:
+    <<: *frontend-base
+    depends_on:
+      backend-overload:
+        condition: service_healthy
+    profiles: ["overload"]
 
 networks:
   default:

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Section from "../components/Section";
+import { API_BASE } from "../utils/api";
 
 export default function Integrations() {
   const [message, setMessage] = useState("Waiting");
@@ -29,6 +30,18 @@ export default function Integrations() {
         <div className="text-sm">Attempt to load blocked scripts/resources to validate CSP.</div>
         <div className="mt-2 rounded border border-black/10 p-2 text-xs" data-testid="csp-note">
           CSP report-only endpoint should receive violations.
+        </div>
+      </Section>
+
+      <Section title="CSP Enforcement Test">
+        <iframe
+          title="csp-test"
+          className="h-28 w-full rounded border border-black/20"
+          src={`${API_BASE}/csp-test`}
+          data-testid="csp-iframe"
+        />
+        <div className="mt-2 text-xs text-black/60">
+          Inline script should be blocked by CSP.
         </div>
       </Section>
     </div>

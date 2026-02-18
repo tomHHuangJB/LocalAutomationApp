@@ -14,6 +14,7 @@ import Files from "./pages/Files";
 import Experiments from "./pages/Experiments";
 import Integrations from "./pages/Integrations";
 import System from "./pages/System";
+import Mobile from "./pages/Mobile";
 import DebugPanel from "./components/DebugPanel";
 
 const navItems = [
@@ -28,6 +29,7 @@ const navItems = [
   { path: "/a11y", label: "A11y" },
   { path: "/i18n", label: "I18n" },
   { path: "/files", label: "Files" },
+  { path: "/mobile", label: "Mobile" },
   { path: "/experiments", label: "Experiments" },
   { path: "/integrations", label: "Integrations" },
   { path: "/system", label: "System" }
@@ -145,6 +147,7 @@ export default function App() {
           <Route path="/a11y" element={<A11y />} />
           <Route path="/i18n" element={<I18n />} />
           <Route path="/files" element={<Files />} />
+          <Route path="/mobile" element={<Mobile />} />
           <Route path="/experiments" element={<Experiments />} />
           <Route path="/integrations" element={<Integrations />} />
           <Route path="/system" element={<System />} />

@@ -1,0 +1,15 @@
+meta {
+  name: Upload Chunk
+  type: http
+  seq: 1
+}
+
+post {
+  url: {baseUrl}/api/upload/chunk
+}
+
+headers {
+  upload-id: upload-123
+  chunk-index: 1
+  total-chunks: 5
+}

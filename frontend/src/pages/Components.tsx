@@ -5,6 +5,7 @@ export default function Components() {
   const [count, setCount] = useState(30);
   const [toasts, setToasts] = useState<string[]>([]);
   const [selectedBar, setSelectedBar] = useState("none");
+  const [flipKeys, setFlipKeys] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -78,6 +79,28 @@ export default function Components() {
           data-testid="context-zone"
         >
           Right click here
+        </div>
+      </Section>
+
+      <Section title="Stale Element & Rerender Lab">
+        <div className="text-sm">Elements keep labels but are replaced in the DOM.</div>
+        <button
+          className="mt-2 rounded border border-black/20 px-3 py-2 text-sm"
+          onClick={() => setFlipKeys((prev) => !prev)}
+          data-testid="rerender-trigger"
+        >
+          Force rerender
+        </button>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-sm" data-testid="rerender-list">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div
+              key={`${flipKeys ? "A" : "B"}-${index}`}
+              className="rounded border border-black/10 p-2"
+              data-testid={`rerender-item-${index}`}
+            >
+              Stable Label {index + 1}
+            </div>
+          ))}
         </div>
       </Section>
 

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import Section from "../components/Section";
+import { apiFetch, API_BASE } from "../utils/api";
 
 const initialRows = Array.from({ length: 8 }).map((_, index) => ({
   id: index + 1,
@@ -10,9 +11,18 @@ const initialRows = Array.from({ length: 8 }).map((_, index) => ({
 export default function Tables() {
   const [rows, setRows] = useState(initialRows);
   const [selected, setSelected] = useState<number[]>([]);
+  const [tableStatus, setTableStatus] = useState("idle");
 
   const toggleSelection = (id: number) => {
     setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
+
+  const fetchTable = async (params: string) => {
+    setTableStatus("loading");
+    const response = await apiFetch(`${API_BASE}/api/table?${params}`).then((res) => res.json());
+    setRows(response.items);
+    setSelected([]);
+    setTableStatus(`rows:${response.items.length}`);
   };
 
   return (
@@ -109,16 +119,29 @@ export default function Tables() {
 
       <Section title="Server-side Sorting & Filtering">
         <div className="flex flex-wrap gap-3 text-sm">
-          <button className="rounded border border-black/20 px-3 py-1" data-testid="sort-asc">
+          <button
+            className="rounded border border-black/20 px-3 py-1"
+            onClick={() => fetchTable("sort=id&order=asc")}
+            data-testid="sort-asc"
+          >
             Sort Asc
           </button>
-          <button className="rounded border border-black/20 px-3 py-1" data-testid="sort-desc">
+          <button
+            className="rounded border border-black/20 px-3 py-1"
+            onClick={() => fetchTable("sort=id&order=desc")}
+            data-testid="sort-desc"
+          >
             Sort Desc
           </button>
-          <button className="rounded border border-black/20 px-3 py-1" data-testid="filter-active">
+          <button
+            className="rounded border border-black/20 px-3 py-1"
+            onClick={() => fetchTable("status=Active")}
+            data-testid="filter-active"
+          >
             Filter Active
           </button>
         </div>
+        <div className="mt-2 text-xs text-black/60" data-testid="table-status">{tableStatus}</div>
       </Section>
     </div>
   );

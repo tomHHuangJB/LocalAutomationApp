@@ -1,0 +1,1055 @@
+openapi: 3.0.3
+info:
+  title: Local Automation Lab API
+  version: 0.1.0
+  description: |
+    Principal-level automation practice API with deterministic delays/failures,
+    security labs, and test harness hooks. All endpoints return JSON unless noted.
+tags:
+  - name: Health
+    description: Service status endpoints
+  - name: Auth
+    description: Authentication and session management
+  - name: Data
+    description: CRUD and data consistency scenarios
+  - name: Reliability
+    description: Flaky/slow/race-condition simulation
+  - name: Files
+    description: Upload/download and checksum scenarios
+  - name: Security
+    description: OWASP-style practice endpoints
+  - name: System
+    description: Permissions, roles, and time skew
+  - name: Streaming
+    description: SSE and WebSocket-related APIs
+servers:
+  - url: http://localhost:3001
+    description: Local backend
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    DelayParam:
+      name: delay
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+      description: Artificial delay in ms.
+    FailProbParam:
+      name: failProbability
+      in: query
+      schema:
+        type: number
+        minimum: 0
+        maximum: 1
+      description: Failure probability (0-1).
+    SeedParam:
+      name: seed
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 4294967295
+      description: Deterministic seed for the request.
+  responses:
+    ErrorResponse:
+      description: Standard error response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                  details:
+                    type: object
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+      required: [code, message]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+      required: [error]
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        user:
+          type: string
+        active:
+          type: boolean
+      required: [id, user, active]
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        refreshToken:
+          type: string
+        user:
+          type: string
+      required: [token, refreshToken, user]
+      example:
+        token: demo-token
+        refreshToken: refresh-demo
+        user: principal.engineer
+    DataItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+      required: [id, name]
+      example:
+        id: 1
+        name: Alpha
+    BatchResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+        message:
+          type: string
+      example:
+        id: 2
+        status: error
+        message: Failed
+    FlagsResponse:
+      type: object
+      properties:
+        flags:
+          type: object
+      example:
+        flags:
+          newUI: true
+          betaFlow: false
+    PaginationResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        nextCursor:
+          type: string
+      example:
+        items:
+          - id: 1
+          - id: 2
+        nextCursor: cursor-2
+    ConsistencyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        visibleAfterMs:
+          type: integer
+      example:
+        status: eventual
+        visibleAfterMs: 2000
+    PartialResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        total:
+          type: integer
+      example:
+        items:
+          - id: 1
+          - id: 2
+        total: 5
+    RaceResponse:
+      type: object
+      properties:
+        label:
+          type: string
+        delay:
+          type: integer
+        serverTime:
+          type: string
+          format: date-time
+      example:
+        label: fast
+        delay: 200
+        serverTime: "2026-01-29T20:00:00.000Z"
+    DedupResponse:
+      type: object
+      properties:
+        key:
+          type: string
+        deduped:
+          type: boolean
+        cachedAt:
+          type: integer
+        payload:
+          type: object
+      example:
+        key: demo
+        deduped: true
+        cachedAt: 1700000000000
+        payload:
+          id: 1700000000000
+          message: fresh response
+    UploadChunkResponse:
+      type: object
+      properties:
+        uploadId:
+          type: string
+        received:
+          type: integer
+        total:
+          type: integer
+      example:
+        uploadId: upload-123
+        received: 3
+        total: 5
+    UploadCompleteResponse:
+      type: object
+      properties:
+        uploadId:
+          type: string
+        complete:
+          type: boolean
+      example:
+        uploadId: upload-123
+        complete: true
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [Health]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example:
+                status: ok
+
+  /api/auth/login:
+    post:
+      summary: Login with rate limiting
+      tags: [Auth]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+            example:
+              username: principal.engineer
+              password: demo
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+              example:
+                token: demo-token
+                refreshToken: refresh-demo
+                user: principal.engineer
+        "429":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/auth/logout:
+    post:
+      summary: Logout and revoke tokens
+      tags: [Auth]
+      responses:
+        "200":
+          description: Logout success
+          content:
+            application/json:
+              example:
+                success: true
+                revoked: 1
+
+  /api/auth/refresh:
+    post:
+      summary: Refresh token rotation
+      tags: [Auth]
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+              example:
+                token: demo-token-rotated
+                refreshToken: refresh-rotated
+                user: principal.engineer
+
+  /api/auth/sessions:
+    get:
+      summary: List active sessions
+      tags: [Auth]
+      responses:
+        "200":
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Session"
+              example:
+                sessions:
+                  - id: sess-1
+                    user: principal
+                    active: true
+
+  /api/auth/forgot:
+    post:
+      summary: Password reset request
+      tags: [Auth]
+      responses:
+        "200":
+          description: Reset sent
+          content:
+            application/json:
+              example:
+                status: sent
+
+  /api/auth/reset:
+    post:
+      summary: Password reset confirmation
+      tags: [Auth]
+      responses:
+        "200":
+          description: Reset complete
+          content:
+            application/json:
+              example:
+                status: reset
+
+  /api/auth/lockout:
+    post:
+      summary: Simulate account lockout
+      tags: [Auth]
+      responses:
+        "423":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/data:
+    get:
+      summary: Get data with deterministic controls
+      tags: [Data]
+      parameters:
+        - $ref: "#/components/parameters/DelayParam"
+        - $ref: "#/components/parameters/FailProbParam"
+        - $ref: "#/components/parameters/SeedParam"
+      responses:
+        "200":
+          description: Data list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DataItem"
+              example:
+                data:
+                  - id: 1
+                    name: Alpha
+                  - id: 2
+                    name: Beta
+    post:
+      summary: Create data with validation
+      tags: [Data]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataItem"
+              example:
+                id: 1700000000000
+                name: New Item
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/data/{id}:
+    put:
+      summary: Update data with optimistic locking
+      tags: [Data]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              example:
+                id: 1
+                name: Updated
+                updated: true
+    delete:
+      summary: Delete data with cascade effects
+      tags: [Data]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              example:
+                deleted: true
+
+  /api/batch:
+    post:
+      summary: Mixed success batch response
+      tags: [Data]
+      responses:
+        "200":
+          description: Batch results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BatchResult"
+              example:
+                results:
+                  - id: 1
+                    status: ok
+                  - id: 2
+                    status: error
+                    message: Failed
+
+  /api/flags:
+    get:
+      summary: Feature flags
+      tags: [Data]
+      responses:
+        "200":
+          description: Flags
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlagsResponse"
+              example:
+                flags:
+                  newUI: true
+                  betaFlow: false
+
+  /api/idempotent:
+    post:
+      summary: Idempotency key handling
+      tags: [Reliability]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Idempotent response
+          content:
+            application/json:
+              example:
+                idempotencyKey: demo-key
+                status: ok
+
+  /api/pagination:
+    get:
+      summary: Cursor and offset pagination
+      tags: [Data]
+      responses:
+        "200":
+          description: Paginated data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginationResponse"
+              example:
+                items:
+                  - id: 1
+                  - id: 2
+                nextCursor: cursor-2
+
+  /api/consistency:
+    get:
+      summary: Eventual consistency simulation
+      tags: [Reliability]
+      responses:
+        "200":
+          description: Consistency info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsistencyResponse"
+              example:
+                status: eventual
+                visibleAfterMs: 2000
+
+  /api/partial:
+    get:
+      summary: Partial content (206) sample
+      tags: [Reliability]
+      responses:
+        "206":
+          description: Partial content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartialResponse"
+              example:
+                items:
+                  - id: 1
+                  - id: 2
+                total: 5
+
+  /api/race:
+    get:
+      summary: Out-of-order response simulator
+      tags: [Reliability]
+      parameters:
+        - name: label
+          in: query
+          schema:
+            type: string
+        - name: delay
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Race response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RaceResponse"
+              example:
+                label: slow
+                delay: 800
+                serverTime: "2026-01-29T20:00:00.000Z"
+
+  /api/dedup:
+    get:
+      summary: Request deduplication simulator
+      tags: [Reliability]
+      parameters:
+        - name: key
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dedup response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DedupResponse"
+              example:
+                key: demo
+                deduped: true
+                cachedAt: 1700000000000
+                payload:
+                  id: 1700000000000
+                  message: fresh response
+
+  /api/flaky:
+    get:
+      summary: Random failure endpoint
+      tags: [Reliability]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              example:
+                ok: true
+        "500":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/slow:
+    get:
+      summary: Random delayed response
+      tags: [Reliability]
+      parameters:
+        - name: min
+          in: query
+          schema:
+            type: integer
+        - name: max
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Delayed response
+          content:
+            application/json:
+              example:
+                delayed: 2500
+
+  /api/large-payload:
+    get:
+      summary: Large JSON payload response
+      tags: [Reliability]
+      responses:
+        "200":
+          description: Payload response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payload:
+                    type: string
+              example:
+                payload: "xxxxx"
+
+  /api/stream:
+    get:
+      summary: Server-sent events stream
+      tags: [Streaming]
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                data: message-1
+
+                data: message-2
+
+  /api/upload:
+    post:
+      summary: Multipart upload
+      tags: [Files]
+      requestBody:
+        required: false
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Upload success
+          content:
+            application/json:
+              example:
+                status: uploaded
+
+  /api/upload/chunk:
+    post:
+      summary: Chunked upload simulation
+      tags: [Files]
+      parameters:
+        - name: upload-id
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: chunk-index
+          in: header
+          required: true
+          schema:
+            type: integer
+        - name: total-chunks
+          in: header
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Chunk received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadChunkResponse"
+              example:
+                uploadId: upload-123
+                received: 3
+                total: 5
+
+  /api/upload/complete:
+    post:
+      summary: Complete chunked upload
+      tags: [Files]
+      parameters:
+        - name: upload-id
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Completion status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadCompleteResponse"
+              example:
+                uploadId: upload-123
+                complete: true
+
+  /api/download/{id}:
+    get:
+      summary: Download content-disposition file
+      tags: [Files]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: checksum
+          in: query
+          schema:
+            type: string
+          description: Use `bad` to return a mismatched checksum header.
+      responses:
+        "200":
+          description: File download
+          headers:
+            X-Checksum-Sha256:
+              schema:
+                type: string
+              description: SHA-256 checksum of the response content.
+          content:
+            text/csv:
+              schema:
+                type: string
+              example: |
+                id,name
+                1,alpha
+                2,beta
+
+  /api/permissions:
+    get:
+      summary: Permission state simulation
+      tags: [System]
+      responses:
+        "200":
+          description: Permission states
+          content:
+            application/json:
+              example:
+                geo: prompt
+                notifications: denied
+                clipboard: granted
+
+  /api/csp-report:
+    post:
+      summary: CSP report-only endpoint
+      tags: [Security]
+      responses:
+        "200":
+          description: Report received
+          content:
+            application/json:
+              example:
+                received: true
+
+  /api/roles:
+    get:
+      summary: Role-based access payloads
+      tags: [System]
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              example:
+                roles: ["viewer", "editor", "admin"]
+                permissions:
+                  admin: ["all"]
+                  viewer: ["read"]
+
+  /api/time-skew:
+    get:
+      summary: Time skew scenarios
+      tags: [System]
+      responses:
+        "200":
+          description: Time skew
+          content:
+            application/json:
+              example:
+                serverTime: 1700000000000
+                skewMs: 0
+
+  /api/security/injection:
+    get:
+      summary: Injection labs (SQL/NoSQL/OS command)
+      tags: [Security]
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: input
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Injection output
+          content:
+            application/json:
+              example:
+                type: sql
+                status: executed
+                rows:
+                  - id: 1
+                    name: principal
+                    role: admin
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/security/access-control:
+    get:
+      summary: Broken access control simulation
+      tags: [Security]
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Authorized
+          content:
+            application/json:
+              example:
+                status: ok
+                data:
+                  secret: admin-only
+        "403":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/security/xss:
+    get:
+      summary: XSS modes
+      tags: [Security]
+      parameters:
+        - name: mode
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: XSS payload
+          content:
+            application/json:
+              example:
+                mode: sanitized
+                content: "&lt;script&gt;alert('xss')&lt;/script&gt;"
+
+  /api/security/misconfig:
+    get:
+      summary: Security misconfiguration toggles
+      tags: [Security]
+      responses:
+        "200":
+          description: Misconfig data
+          content:
+            application/json:
+              example:
+                debug: true
+                defaultCreds: true
+                headers:
+                  server: demo
+
+  /api/security/vulnerable:
+    get:
+      summary: Vulnerable component simulation
+      tags: [Security]
+      responses:
+        "200":
+          description: CVE info
+          content:
+            application/json:
+              example:
+                component: demo-lib
+                version: 1.0.0
+                cve: CVE-2020-1234
+                status: outdated
+
+  /api/security/ssrf:
+    get:
+      summary: SSRF simulator
+      tags: [Security]
+      parameters:
+        - name: url
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSRF response
+          content:
+            application/json:
+              example:
+                target: http://internal.service
+                allowed: false
+
+  /api/security/crypto:
+    get:
+      summary: Cryptographic failure simulation
+      tags: [Security]
+      responses:
+        "200":
+          description: Crypto info
+          content:
+            application/json:
+              example:
+                hashing: md5
+                encrypted: false
+                sample: demo-hash
+
+  /api/security/logging:
+    get:
+      summary: Security logging and monitoring
+      tags: [Security]
+      responses:
+        "200":
+          description: Audit log
+          content:
+            application/json:
+              example:
+                audit:
+                  - event: login_failed
+                    user: principal
+                    timestamp: "2026-01-29T20:00:00.000Z"
+
+  /api/security/headers:
+    get:
+      summary: Security headers validation
+      tags: [Security]
+      responses:
+        "200":
+          description: Headers set
+          content:
+            application/json:
+              example:
+                status: headers-set
+
+  /api/security/redirect:
+    get:
+      summary: Open redirect validation
+      tags: [Security]
+      parameters:
+        - name: target
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Redirected
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /api/reset:
+    post:
+      summary: Reset test data and sessions
+      tags: [System]
+      responses:
+        "200":
+          description: Reset done
+          content:
+            application/json:
+              example:
+                status: reset
+
+  /api/seed:
+    post:
+      summary: Seed data generation
+      tags: [System]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                seed:
+                  type: integer
+            example:
+              seed: 42
+      responses:
+        "200":
+          description: Seeded
+          content:
+            application/json:
+              example:
+                seed: 42
+
+  /csp-test:
+    get:
+      summary: CSP enforcement test page
+      tags: [Security]
+      responses:
+        "200":
+          description: HTML with CSP header (inline script blocked)
+          content:
+            text/html:
+              schema:
+                type: string
+              example: "<!doctype html><html><head><title>CSP Test</title></head><body><h1>CSP Test</h1></body></html>"

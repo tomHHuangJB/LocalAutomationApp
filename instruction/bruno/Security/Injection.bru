@@ -1,0 +1,9 @@
+meta {
+  name: Injection
+  type: http
+  seq: 1
+}
+
+get {
+  url: {baseUrl}/api/security/injection?type=sql&input=SELECT%20*%20FROM%20users
+}

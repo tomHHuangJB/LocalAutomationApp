@@ -5,3 +5,7 @@ backend/package-lock.json
 frontend/node_modules/
 frontend/dist/
 frontend/package-lock.json
+.DS_Store
+backend/src/.DS_Store
+backend/.DS_Store
+*.DS_Store

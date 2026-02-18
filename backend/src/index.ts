@@ -55,6 +55,8 @@ app.use("/api", deterministicBehavior);
 
 const sessions = [{ id: "sess-1", user: "principal", active: true }];
 let notifications = 0;
+const dedupCache = new Map<string, { response: unknown; timestamp: number }>();
+const uploadSessions = new Map<string, { totalChunks: number; received: Set<number> }>();
 
 app.post("/api/auth/login", (req, res) => {
   res.json({ token: "demo-token", refreshToken: "refresh-demo", user: req.body?.username ?? "user" });
@@ -121,6 +123,44 @@ app.get("/api/pagination", (_req, res) => {
 
 app.get("/api/consistency", (_req, res) => {
   res.json({ status: "eventual", visibleAfterMs: 2000 });
+});
+
+app.get("/api/race", (req, res) => {
+  const label = String(req.query.label ?? "fast");
+  const delay = Number(req.query.delay ?? (label === "slow" ? 800 : 200));
+  setTimeout(() => {
+    res.json({ label, delay, serverTime: new Date().toISOString() });
+  }, delay);
+});
+
+app.get("/api/dedup", (req, res) => {
+  const key = String(req.query.key ?? "default");
+  const now = Date.now();
+  const cached = dedupCache.get(key);
+  if (cached && now - cached.timestamp < 2000) {
+    return res.json({ key, deduped: true, cachedAt: cached.timestamp, payload: cached.response });
+  }
+  const response = { id: now, message: "fresh response" };
+  dedupCache.set(key, { response, timestamp: now });
+  res.json({ key, deduped: false, payload: response });
+});
+
+app.get("/api/table", (req, res) => {
+  const status = String(req.query.status ?? "all");
+  const sort = String(req.query.sort ?? "id");
+  const order = String(req.query.order ?? "asc");
+  const rows = Array.from({ length: 12 }).map((_, index) => ({
+    id: index + 1,
+    name: `Row ${index + 1}`,
+    status: index % 2 === 0 ? "Active" : "Paused"
+  }));
+  const filtered = status === "all" ? rows : rows.filter((row) => row.status.toLowerCase() === status.toLowerCase());
+  const sorted = [...filtered].sort((a, b) => {
+    const direction = order === "desc" ? -1 : 1;
+    if (sort === "name") return a.name.localeCompare(b.name) * direction;
+    return (a.id - b.id) * direction;
+  });
+  res.json({ items: sorted, total: sorted.length });
 });
 
 app.get("/api/permissions", (_req, res) => {
@@ -219,7 +259,27 @@ app.post("/api/upload", (_req, res) => {
   res.json({ status: "uploaded" });
 });
 
+app.post("/api/upload/chunk", (req, res) => {
+  const uploadId = String(req.headers["upload-id"] ?? "default");
+  const chunkIndex = Number(req.headers["chunk-index"] ?? 0);
+  const totalChunks = Number(req.headers["total-chunks"] ?? 1);
+  const session = uploadSessions.get(uploadId) ?? { totalChunks, received: new Set<number>() };
+  session.totalChunks = totalChunks;
+  session.received.add(chunkIndex);
+  uploadSessions.set(uploadId, session);
+  res.json({ uploadId, received: session.received.size, total: session.totalChunks });
+});
+
+app.post("/api/upload/complete", (req, res) => {
+  const uploadId = String(req.headers["upload-id"] ?? "default");
+  const session = uploadSessions.get(uploadId);
+  const complete = !!session && session.received.size >= session.totalChunks;
+  res.json({ uploadId, complete });
+});
+
 app.get("/api/download/:id", (req, res) => {
+  const checksum = req.query.checksum === "bad" ? "bad-hash" : "demo-hash";
+  res.setHeader("X-Checksum-Sha256", checksum);
   res.setHeader("Content-Disposition", `attachment; filename=report-${req.params.id}.csv`);
   res.type("text/csv").send("id,name\n1,alpha\n2,beta\n");
 });
@@ -242,23 +302,32 @@ app.get("/api/large-payload", (_req, res) => {
   res.json({ payload: "x".repeat(5_000_000) });
 });
 
-app.get("/api/stream", (_req, res) => {
+app.get("/api/stream", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
+  const intervalMs = Number(req.query.interval ?? 1000);
+  const maxCount = Number(req.query.count ?? 5);
   let count = 0;
   const interval = setInterval(() => {
     count += 1;
     res.write(`data: message-${count}\n\n`);
-    if (count >= 5) {
+    if (count >= maxCount) {
       clearInterval(interval);
       res.end();
     }
-  }, 1000);
+  }, intervalMs);
 });
 
 app.get("/api/partial", (_req, res) => {
   res.status(206);
   res.setHeader("Content-Range", "items 0-1/5");
   res.json({ items: [{ id: 1 }, { id: 2 }], total: 5 });
+});
+
+app.get("/csp-test", (_req, res) => {
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'");
+  res.type("text/html").send(
+    "<!doctype html><html><head><title>CSP Test</title></head><body><h1>CSP Test</h1><script>window.cspBlocked = true;</script></body></html>"
+  );
 });
 
 wss.on("connection", (socket) => {
@@ -272,11 +341,13 @@ wss.on("connection", (socket) => {
     isAlive = true;
   });
 
+  const wsInterval = Number(process.env.WS_INTERVAL_MS ?? 4000);
   const interval = setInterval(() => {
     notifications += 1;
     socket.send(JSON.stringify({ type: "notification", payload: `Notification ${notifications}` }));
-  }, 4000);
+  }, wsInterval);
 
+  const heartbeatInterval = Number(process.env.WS_HEARTBEAT_MS ?? 5000);
   const heartbeat = setInterval(() => {
     if (!isAlive) {
       socket.terminate();
@@ -284,7 +355,7 @@ wss.on("connection", (socket) => {
     }
     isAlive = false;
     socket.ping();
-  }, 5000);
+  }, heartbeatInterval);
 
   socket.on("close", () => {
     clearInterval(interval);
@@ -297,6 +368,10 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 const port = Number(process.env.PORT ?? 3001);
-server.listen(port, () => {
-  console.log(`API server running on ${port}`);
-});
+if (process.env.NODE_ENV !== "test") {
+  server.listen(port, () => {
+    console.log(`API server running on ${port}`);
+  });
+}
+
+export { app, server };

@@ -1,0 +1,10 @@
+process.env.NODE_ENV = "test";
+process.env.FAILURE_RATE = "0";
+process.env.AVERAGE_DELAY_MS = "0";
+process.env.ENABLE_WEBSOCKETS = "false";
+process.env.ALLOW_CORS_FROM = "*";
+process.env.GLOBAL_SEED = "42";
+process.env.FAILURE_PATTERN = "";
+process.env.TIME_SKEW_MS = "0";
+process.env.WS_INTERVAL_MS = "100";
+process.env.WS_HEARTBEAT_MS = "200";
