@@ -13,12 +13,15 @@ type GrpcClient = grpc.Client & {
   ResetInventory: Function;
   GetQuote: Function;
   StreamQuotes: Function;
+  Check: Function;
+  Watch: Function;
 };
 
 function loadClient(port: number): GrpcClient {
   const inventoryProtoPath = fileURLToPath(new URL("../proto/inventory.proto", import.meta.url));
   const pricingProtoPath = fileURLToPath(new URL("../proto/pricing.proto", import.meta.url));
-  const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath], {
+  const healthProtoPath = fileURLToPath(new URL("../proto/health.proto", import.meta.url));
+  const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, healthProtoPath], {
     longs: String,
     enums: String,
     defaults: true,
@@ -33,15 +36,20 @@ function loadClient(port: number): GrpcClient {
     `localhost:${port}`,
     grpc.credentials.createInsecure()
   ) as GrpcClient;
+  const healthClient = new loaded.grpc.health.v1.Health(`localhost:${port}`, grpc.credentials.createInsecure()) as GrpcClient;
   const inventoryClose = inventoryClient.close.bind(inventoryClient);
   const pricingClose = pricingClient.close.bind(pricingClient);
+  const healthClose = healthClient.close.bind(healthClient);
 
   return Object.assign(inventoryClient, {
     GetQuote: pricingClient.GetQuote.bind(pricingClient),
     StreamQuotes: pricingClient.StreamQuotes.bind(pricingClient),
+    Check: healthClient.Check.bind(healthClient),
+    Watch: healthClient.Watch.bind(healthClient),
     close: () => {
       inventoryClose();
       pricingClose();
+      healthClose();
     }
   });
 }
@@ -168,6 +176,29 @@ describe("gRPC integration", () => {
     ).rejects.toMatchObject({
       code: grpc.status.DEADLINE_EXCEEDED
     });
+  });
+
+  it("reports serving health for known services and not found for unknown services", async () => {
+    const overall = await unary<{ status: string }>(client.Check.bind(client), { service: "" });
+    expect(overall.status).toBe("SERVING");
+
+    const inventory = await unary<{ status: string }>(client.Check.bind(client), {
+      service: "automation.inventory.v1.InventoryService"
+    });
+    expect(inventory.status).toBe("SERVING");
+
+    await expect(unary(client.Check.bind(client), { service: "automation.unknown.v1.MissingService" })).rejects.toMatchObject({
+      code: grpc.status.NOT_FOUND
+    });
+
+    const watchedStatuses = await new Promise<string[]>((resolve, reject) => {
+      const statuses: string[] = [];
+      const stream = client.Watch({ service: "grpc.health.v1.Health" });
+      stream.on("data", (message: { status: string }) => statuses.push(message.status));
+      stream.on("end", () => resolve(statuses));
+      stream.on("error", reject);
+    });
+    expect(watchedStatuses).toEqual(["SERVING"]);
   });
 
 });
