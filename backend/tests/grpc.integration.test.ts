@@ -13,24 +13,39 @@ type GrpcClient = grpc.Client & {
   ResetInventory: Function;
   GetQuote: Function;
   StreamQuotes: Function;
+  CreateOrder: Function;
+  GetOrder: Function;
+  ListOrders: Function;
+  ResetOrders: Function;
+  IngestAuditEvents: Function;
+  ListAuditEvents: Function;
+  ResetAuditEvents: Function;
   Check: Function;
   Watch: Function;
   Connect: Function;
   ListNotifications: Function;
   ResetNotifications: Function;
+  GetSystemSnapshot: Function;
+  ResetAllState: Function;
 };
 
 function loadClient(port: number): GrpcClient {
   const inventoryProtoPath = fileURLToPath(new URL("../proto/inventory.proto", import.meta.url));
   const pricingProtoPath = fileURLToPath(new URL("../proto/pricing.proto", import.meta.url));
+  const orderProtoPath = fileURLToPath(new URL("../proto/order.proto", import.meta.url));
+  const auditProtoPath = fileURLToPath(new URL("../proto/audit.proto", import.meta.url));
   const healthProtoPath = fileURLToPath(new URL("../proto/health.proto", import.meta.url));
   const notificationProtoPath = fileURLToPath(new URL("../proto/notification.proto", import.meta.url));
-  const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, healthProtoPath, notificationProtoPath], {
+  const adminProtoPath = fileURLToPath(new URL("../proto/admin.proto", import.meta.url));
+  const packageDefinition = protoLoader.loadSync(
+    [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath, adminProtoPath],
+    {
     longs: String,
     enums: String,
     defaults: true,
     oneofs: true
-  });
+  }
+  );
   const loaded = grpc.loadPackageDefinition(packageDefinition) as any;
   const inventoryClient = new loaded.automation.inventory.v1.InventoryService(
     `localhost:${port}`,
@@ -40,30 +55,77 @@ function loadClient(port: number): GrpcClient {
     `localhost:${port}`,
     grpc.credentials.createInsecure()
   ) as GrpcClient;
+  const orderClient = new loaded.automation.order.v1.OrderService(
+    `localhost:${port}`,
+    grpc.credentials.createInsecure()
+  ) as GrpcClient;
+  const auditClient = new loaded.automation.audit.v1.AuditService(
+    `localhost:${port}`,
+    grpc.credentials.createInsecure()
+  ) as GrpcClient;
   const healthClient = new loaded.grpc.health.v1.Health(`localhost:${port}`, grpc.credentials.createInsecure()) as GrpcClient;
   const notificationClient = new loaded.automation.notification.v1.NotificationService(
     `localhost:${port}`,
     grpc.credentials.createInsecure()
   ) as GrpcClient;
+  const adminClient = new loaded.automation.admin.v1.AdminService(
+    `localhost:${port}`,
+    grpc.credentials.createInsecure()
+  ) as GrpcClient;
   const inventoryClose = inventoryClient.close.bind(inventoryClient);
   const pricingClose = pricingClient.close.bind(pricingClient);
+  const orderClose = orderClient.close.bind(orderClient);
+  const auditClose = auditClient.close.bind(auditClient);
   const healthClose = healthClient.close.bind(healthClient);
   const notificationClose = notificationClient.close.bind(notificationClient);
+  const adminClose = adminClient.close.bind(adminClient);
 
   return Object.assign(inventoryClient, {
     GetQuote: pricingClient.GetQuote.bind(pricingClient),
     StreamQuotes: pricingClient.StreamQuotes.bind(pricingClient),
+    CreateOrder: orderClient.CreateOrder.bind(orderClient),
+    GetOrder: orderClient.GetOrder.bind(orderClient),
+    ListOrders: orderClient.ListOrders.bind(orderClient),
+    ResetOrders: orderClient.ResetOrders.bind(orderClient),
+    IngestAuditEvents: auditClient.IngestAuditEvents.bind(auditClient),
+    ListAuditEvents: auditClient.ListAuditEvents.bind(auditClient),
+    ResetAuditEvents: auditClient.ResetAuditEvents.bind(auditClient),
     Check: healthClient.Check.bind(healthClient),
     Watch: healthClient.Watch.bind(healthClient),
     Connect: notificationClient.Connect.bind(notificationClient),
     ListNotifications: notificationClient.ListNotifications.bind(notificationClient),
     ResetNotifications: notificationClient.ResetNotifications.bind(notificationClient),
+    GetSystemSnapshot: adminClient.GetSystemSnapshot.bind(adminClient),
+    ResetAllState: adminClient.ResetAllState.bind(adminClient),
     close: () => {
       inventoryClose();
       pricingClose();
+      orderClose();
+      auditClose();
       healthClose();
       notificationClose();
+      adminClose();
     }
+  });
+}
+
+function clientStream<TResponse>(
+  fn: Function,
+  items: Array<Record<string, unknown>>
+): Promise<TResponse> {
+  return new Promise((resolve, reject) => {
+    const stream = fn((error: grpc.ServiceError | null, response: TResponse) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(response);
+    });
+
+    for (const item of items) {
+      stream.write(item);
+    }
+    stream.end();
   });
 }
 
@@ -222,6 +284,7 @@ describe("gRPC integration", () => {
     subscriber.on("data", (message: { connected?: { channel: string }; broadcast?: { messageId: string; replay?: boolean } }) => {
       subscriberEvents.push(message);
     });
+    subscriber.on("error", () => undefined);
 
     subscriber.write({
       subscribe: {
@@ -239,6 +302,7 @@ describe("gRPC integration", () => {
     publisher.on("data", (message: { ack?: { messageId: string; sequenceNumber: number } }) => {
       publisherEvents.push(message);
     });
+    publisher.on("error", () => undefined);
 
     publisher.write({
       publish: {
@@ -262,6 +326,7 @@ describe("gRPC integration", () => {
     replayClient.on("data", (message: { broadcast?: { messageId: string; replay?: boolean } }) => {
       replayEvents.push(message);
     });
+    replayClient.on("error", () => undefined);
     replayClient.write({
       subscribe: {
         clientId: "sub-2",
@@ -284,6 +349,77 @@ describe("gRPC integration", () => {
     subscriber.end();
     publisher.end();
     replayClient.end();
+  });
+
+  it("provides admin snapshot and reset across all gRPC-backed state", async () => {
+    await unary(client.ResetAllState.bind(client), {});
+
+    await unary(client.ReserveStock.bind(client), {
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      reservationId: "admin-res-1"
+    });
+
+    await unary(client.GetQuote.bind(client), {
+      sku: "SKU-BLUE-DESK",
+      quantity: 1,
+      currency: "USD"
+    });
+
+    await unary(client.CreateOrder.bind(client), {
+      orderId: "admin-order-1",
+      sku: "SKU-BLUE-DESK",
+      quantity: 1,
+      currency: "USD"
+    });
+
+    await clientStream(client.IngestAuditEvents.bind(client), [
+      {
+        eventId: "evt-admin-1",
+        eventType: "order_created",
+        entityId: "order-admin-1",
+        payload: "ok",
+        eventTimeEpochMs: "1710000000000"
+      }
+    ]);
+
+    const notificationStream = client.Connect();
+    notificationStream.on("error", () => undefined);
+    notificationStream.write({
+      publish: {
+        messageId: "msg-admin-1",
+        channel: "ops",
+        body: "hello",
+        senderId: "bot-admin"
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    notificationStream.end();
+
+    const snapshot = await unary<{
+      inventory: { skuCount: number; activeReservationCount: number };
+      orders: { orderCount: number };
+      audit: { eventCount: number };
+      notifications: { notificationCount: number; activeChannelSubscriberCount: number };
+    }>(client.GetSystemSnapshot.bind(client), {});
+    expect(snapshot.inventory.skuCount).toBe(3);
+    expect(snapshot.inventory.activeReservationCount).toBe(2);
+    expect(snapshot.orders.orderCount).toBe(1);
+    expect(snapshot.audit.eventCount).toBe(1);
+    expect(snapshot.notifications.notificationCount).toBe(1);
+
+    const reset = await unary<{
+      clearedOrders: number;
+      clearedAuditEvents: number;
+      clearedNotifications: number;
+      remainingInventoryReservations: number;
+      inventory: Array<{ sku: string; available: number }>;
+    }>(client.ResetAllState.bind(client), {});
+    expect(reset.clearedOrders).toBe(1);
+    expect(reset.clearedAuditEvents).toBe(1);
+    expect(reset.clearedNotifications).toBe(1);
+    expect(reset.remainingInventoryReservations).toBe(0);
+    expect(reset.inventory).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-RED-CHAIR", available: 12 })]));
   });
 
 });

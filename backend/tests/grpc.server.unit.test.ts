@@ -420,4 +420,35 @@ describe("gRPC server handlers", () => {
     secondHandlers.get("end")?.();
     expect(ended).toBeGreaterThan(0);
   });
+
+  it("covers admin handlers", async () => {
+    const failureMetadata = new grpc.Metadata();
+    failureMetadata.set("x-failure-mode", "deadline_exceeded");
+
+    const snapshotInjected = await invokeUnary(__testables.adminService.GetSystemSnapshot, {}, failureMetadata);
+    expect(snapshotInjected.error?.code).toBe(grpc.status.DEADLINE_EXCEEDED);
+
+    const seededOrder = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "admin-unit-order",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect((seededOrder.response as { order: { orderId: string } }).order.orderId).toBe("admin-unit-order");
+
+    const snapshot = await invokeUnary(__testables.adminService.GetSystemSnapshot, {});
+    expect(snapshot.response).toMatchObject({
+      inventory: expect.objectContaining({ skuCount: 3 }),
+      orders: expect.objectContaining({ orderCount: 1 })
+    });
+
+    const resetInjected = await invokeUnary(__testables.adminService.ResetAllState, {}, failureMetadata);
+    expect(resetInjected.error?.code).toBe(grpc.status.DEADLINE_EXCEEDED);
+
+    const reset = await invokeUnary(__testables.adminService.ResetAllState, {});
+    expect(reset.response).toMatchObject({
+      clearedOrders: 1,
+      remainingInventoryReservations: 0
+    });
+  });
 });

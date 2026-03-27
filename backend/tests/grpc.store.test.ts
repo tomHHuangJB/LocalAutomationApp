@@ -18,6 +18,7 @@ describe("gRPC stores", () => {
 
     const released = store.release("res-1");
     expect(released.availableAfterRelease).toBe(12);
+    expect(store.reservationCount()).toBe(0);
 
     store.reset();
     expect(store.listStock()).toEqual(
@@ -27,6 +28,7 @@ describe("gRPC stores", () => {
         expect.objectContaining({ sku: "SKU-GREEN-LAMP", available: 0 })
       ])
     );
+    expect(store.reservationCount()).toBe(0);
   });
 
   it("raises inventory validation errors for unknown sku, low stock, and missing reservation", () => {
