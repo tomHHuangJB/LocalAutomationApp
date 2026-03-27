@@ -12,6 +12,42 @@ docker compose --profile stable up --build
 - Backend API: http://localhost:3001
 - API docs (Swagger UI): http://localhost:3002
 
+## Local Backend Only
+
+If you want to run only the backend locally for API and gRPC practice:
+
+```bash
+cd backend
+npm install
+npm run build
+npm start
+```
+
+Default ports:
+
+- HTTP API: `http://localhost:3001`
+- gRPC: `localhost:50051`
+
+If port `3001` or `50051` is already in use, either stop the existing process or run on alternate ports:
+
+```bash
+PORT=3101 GRPC_PORT=51051 npm start
+```
+
+Useful cleanup commands:
+
+```bash
+lsof -ti :3001 | xargs kill
+lsof -ti :50051 | xargs kill
+```
+
+If you want to inspect the port owner before killing it:
+
+```bash
+lsof -i :3001
+lsof -i :50051
+```
+
 ## Profiles
 
 Use profiles to simulate test conditions without changing test code:
