@@ -13,6 +13,8 @@
     "test:coverage": "NODE_ENV=test NODE_OPTIONS=--experimental-vm-modules jest --coverage"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.1.5",
