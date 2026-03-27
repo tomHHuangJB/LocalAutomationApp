@@ -314,4 +314,110 @@ describe("gRPC server handlers", () => {
     expect(watchWrites).toEqual([{ status: "SERVICE_UNKNOWN" }]);
     expect(ended).toBe(1);
   });
+
+  it("covers notification handlers and response shaping", async () => {
+    expect(
+      __testables.notificationRecordResponse(
+        {
+          messageId: "msg-1",
+          channel: "ops",
+          body: "hello",
+          senderId: "bot-1",
+          sequenceNumber: 1
+        },
+        "corr-notify",
+        true
+      )
+    ).toEqual({
+      broadcast: {
+        messageId: "msg-1",
+        channel: "ops",
+        body: "hello",
+        senderId: "bot-1",
+        sequenceNumber: 1,
+        replay: true,
+        correlationId: "corr-notify"
+      }
+    });
+
+    const injectedMetadata = new grpc.Metadata();
+    injectedMetadata.set("x-failure-mode", "internal");
+
+    const resetInjected = await invokeUnary(__testables.notificationService.ResetNotifications, {}, injectedMetadata);
+    expect(resetInjected.error?.code).toBe(grpc.status.INTERNAL);
+
+    const listInjected = await invokeUnary(__testables.notificationService.ListNotifications, { channel: "ops" }, injectedMetadata);
+    expect(listInjected.error?.code).toBe(grpc.status.INTERNAL);
+
+    const duplexFailureErrors: Array<grpc.ServiceError> = [];
+    __testables.notificationService.Connect({
+      metadata: injectedMetadata,
+      on: () => undefined,
+      write: () => undefined,
+      end: () => undefined,
+      destroy: (error: grpc.ServiceError) => duplexFailureErrors.push(error)
+    });
+    expect(duplexFailureErrors[0]?.code).toBe(grpc.status.INTERNAL);
+
+    const handlers = new Map<string, Function>();
+    const writes: Array<unknown> = [];
+    const destroyErrors: Array<grpc.ServiceError> = [];
+    let ended = 0;
+    __testables.notificationService.Connect({
+      metadata: new grpc.Metadata(),
+      on: (event: string, handler: Function) => {
+        handlers.set(event, handler);
+        return undefined;
+      },
+      write: (payload: unknown) => writes.push(payload),
+      end: () => {
+        ended += 1;
+      },
+      destroy: (error: grpc.ServiceError) => destroyErrors.push(error)
+    });
+
+    handlers.get("data")?.({ subscribe: { clientId: "", channel: "ops", replayRecent: 0 } });
+    expect(destroyErrors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const secondHandlers = new Map<string, Function>();
+    const secondWrites: Array<unknown> = [];
+    const secondDestroyErrors: Array<grpc.ServiceError> = [];
+    __testables.notificationService.Connect({
+      metadata: new grpc.Metadata(),
+      on: (event: string, handler: Function) => {
+        secondHandlers.set(event, handler);
+        return undefined;
+      },
+      write: (payload: unknown) => secondWrites.push(payload),
+      end: () => {
+        ended += 1;
+      },
+      destroy: (error: grpc.ServiceError) => secondDestroyErrors.push(error)
+    });
+
+    secondHandlers.get("data")?.({ subscribe: { clientId: "sub-1", channel: "ops", replayRecent: 0 } });
+    secondHandlers.get("data")?.({
+      publish: {
+        messageId: "msg-2",
+        channel: "ops",
+        body: "hello",
+        senderId: "bot-1",
+        failAfterAckCount: 1
+      }
+    });
+    expect(secondWrites).toContainEqual(
+      expect.objectContaining({ connected: expect.objectContaining({ clientId: "sub-1", channel: "ops" }) })
+    );
+    expect(secondWrites).toContainEqual(
+      expect.objectContaining({ ack: expect.objectContaining({ messageId: "msg-2", sequenceNumber: 1 }) })
+    );
+    expect(secondWrites).toContainEqual(
+      expect.objectContaining({ broadcast: expect.objectContaining({ messageId: "msg-2", replay: false }) })
+    );
+    expect(secondDestroyErrors[0]?.code).toBe(grpc.status.UNAVAILABLE);
+
+    secondHandlers.get("error")?.(new Error("stream boom"));
+    secondHandlers.get("end")?.();
+    expect(ended).toBeGreaterThan(0);
+  });
 });

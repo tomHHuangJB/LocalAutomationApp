@@ -1,5 +1,6 @@
 import grpc from "@grpc/grpc-js";
 import { InventoryStore } from "../src/grpc/inventoryStore.js";
+import { NotificationStore } from "../src/grpc/notificationStore.js";
 import { OrderStore } from "../src/grpc/orderStore.js";
 import { PricingStore, pricingValidationError, toMoney } from "../src/grpc/pricingStore.js";
 
@@ -160,5 +161,38 @@ describe("gRPC stores", () => {
   it("raises order lookup error for unknown order", () => {
     const store = new OrderStore();
     expect(() => store.get("missing-order")).toThrow("Unknown order: missing-order");
+  });
+
+  it("supports notification publish, replay, list, and reset", () => {
+    const store = new NotificationStore();
+
+    const first = store.publish({
+      messageId: "msg-1",
+      channel: "ops",
+      body: "deployment started",
+      senderId: "bot-1"
+    });
+    const second = store.publish({
+      messageId: "msg-2",
+      channel: "ops",
+      body: "deployment finished",
+      senderId: "bot-1"
+    });
+    const other = store.publish({
+      messageId: "msg-3",
+      channel: "alerts",
+      body: "cpu high",
+      senderId: "monitor"
+    });
+
+    expect(first.sequenceNumber).toBe(1);
+    expect(second.sequenceNumber).toBe(2);
+    expect(other.sequenceNumber).toBe(1);
+
+    expect(store.replay("ops", 1)).toEqual([expect.objectContaining({ messageId: "msg-2" })]);
+    expect(store.list("ops")).toHaveLength(2);
+    expect(store.list()).toHaveLength(3);
+    expect(store.reset()).toBe(3);
+    expect(store.list()).toHaveLength(0);
   });
 });

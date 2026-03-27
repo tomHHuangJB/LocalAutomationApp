@@ -1,0 +1,2 @@
+{"subscribe":{"clientId":"manual-sub-1","channel":"ops","replayRecent":0}}
+{"publish":{"messageId":"manual-msg-1","channel":"ops","body":"deployment complete","senderId":"manual-bot"}}
