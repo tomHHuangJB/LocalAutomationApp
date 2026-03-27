@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package automation.audit.v1;
+
+message AuditEvent {
+  string event_id = 1;
+  string event_type = 2;
+  string entity_id = 3;
+  string payload = 4;
+  int64 event_time_epoch_ms = 5;
+}
+
+message IngestAuditEventsResponse {
+  int32 accepted_count = 1;
+  string batch_id = 2;
+  string correlation_id = 3;
+}
+
+message ListAuditEventsRequest {
+  string event_type = 1;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+  string correlation_id = 2;
+}
+
+message ResetAuditEventsRequest {}
+
+message ResetAuditEventsResponse {
+  int32 cleared = 1;
+  string correlation_id = 2;
+}
+
+service AuditService {
+  rpc IngestAuditEvents(stream AuditEvent) returns (IngestAuditEventsResponse);
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+  rpc ResetAuditEvents(ResetAuditEventsRequest) returns (ResetAuditEventsResponse);
+}

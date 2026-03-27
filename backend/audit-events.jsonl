@@ -1,0 +1,2 @@
+{"eventId":"evt-1","eventType":"order_created","entityId":"order-100","payload":"ok","eventTimeEpochMs":1710000000000}
+{"eventId":"evt-2","eventType":"order_failed","entityId":"order-fail-pricing","payload":"rollback","eventTimeEpochMs":1710000001000}

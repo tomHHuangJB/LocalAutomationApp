@@ -2,6 +2,7 @@ import grpc from "@grpc/grpc-js";
 import protoLoader from "@grpc/proto-loader";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
+import { AuditStore, type StoredAuditEvent } from "./auditStore.js";
 import { InventoryStore, type FailureMode } from "./inventoryStore.js";
 import { OrderStore, type StoredOrder } from "./orderStore.js";
 import {
@@ -14,7 +15,8 @@ import {
 const inventoryProtoPath = fileURLToPath(new URL("../../proto/inventory.proto", import.meta.url));
 const pricingProtoPath = fileURLToPath(new URL("../../proto/pricing.proto", import.meta.url));
 const orderProtoPath = fileURLToPath(new URL("../../proto/order.proto", import.meta.url));
-const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, orderProtoPath], {
+const auditProtoPath = fileURLToPath(new URL("../../proto/audit.proto", import.meta.url));
+const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath], {
   longs: String,
   enums: String,
   defaults: true,
@@ -24,7 +26,9 @@ const loaded = grpc.loadPackageDefinition(packageDefinition) as any;
 const inventoryPackage = loaded.automation.inventory.v1;
 const pricingPackage = loaded.automation.pricing.v1;
 const orderPackage = loaded.automation.order.v1;
+const auditPackage = loaded.automation.audit.v1;
 
+const auditStore = new AuditStore();
 const store = new InventoryStore();
 const pricingStore = new PricingStore();
 const orderStore = new OrderStore();
@@ -86,6 +90,14 @@ function orderValidationError(message: string, code: grpc.status): grpc.ServiceE
 function orderFailureStepFromMetadata(metadata: grpc.Metadata): string {
   const header = metadata.get("x-order-failure-step")[0];
   return typeof header === "string" ? header : "";
+}
+
+function auditValidationError(message: string, code: grpc.status): grpc.ServiceError {
+  return {
+    name: "AuditValidationError",
+    message,
+    code
+  } as grpc.ServiceError;
 }
 
 const inventoryService = {
@@ -231,6 +243,16 @@ function orderResponse(order: StoredOrder, correlationId: string) {
       status: order.status
     },
     correlationId
+  };
+}
+
+function auditEventResponse(event: StoredAuditEvent) {
+  return {
+    eventId: event.eventId,
+    eventType: event.eventType,
+    entityId: event.entityId,
+    payload: event.payload,
+    eventTimeEpochMs: event.eventTimeEpochMs
   };
 }
 
@@ -482,12 +504,128 @@ const orderService = {
   }
 };
 
+const auditService = {
+  IngestAuditEvents(
+    call: grpc.ServerReadableStream<
+      {
+        eventId?: string;
+        eventType?: string;
+        entityId?: string;
+        payload?: string;
+        eventTimeEpochMs?: number | string;
+      },
+      unknown
+    >,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const correlationId = correlationIdFromMetadata(call.metadata);
+    const batchId = randomUUID();
+    const acceptedEvents: StoredAuditEvent[] = [];
+    let settled = false;
+
+    call.on("data", (event) => {
+      if (settled) {
+        return;
+      }
+
+      const eventType = String(event.eventType ?? "").trim();
+      const entityId = String(event.entityId ?? "").trim();
+      const payload = String(event.payload ?? "");
+      const rawTime = Number(event.eventTimeEpochMs ?? 0);
+      const eventTimeEpochMs = Number.isFinite(rawTime) && rawTime > 0 ? rawTime : Date.now();
+      const eventId = String(event.eventId ?? "").trim() || randomUUID();
+
+      if (!eventType) {
+        settled = true;
+        callback(auditValidationError("eventType is required", grpc.status.INVALID_ARGUMENT), null);
+        return;
+      }
+      if (!entityId) {
+        settled = true;
+        callback(auditValidationError("entityId is required", grpc.status.INVALID_ARGUMENT), null);
+        return;
+      }
+
+      acceptedEvents.push(
+        auditStore.add({
+          eventId,
+          eventType,
+          entityId,
+          payload,
+          eventTimeEpochMs
+        })
+      );
+    });
+
+    call.on("end", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback(null, {
+        acceptedCount: acceptedEvents.length,
+        batchId,
+        correlationId
+      });
+    });
+
+    call.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback(error as grpc.ServiceError, null);
+    });
+  },
+
+  ListAuditEvents(
+    call: grpc.ServerUnaryCall<{ eventType?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const eventType = String(call.request?.eventType ?? "").trim();
+    callback(null, {
+      events: auditStore.list(eventType || undefined).map(auditEventResponse),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  },
+
+  ResetAuditEvents(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      cleared: auditStore.reset(),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  }
+};
+
 export const __testables = {
   inventoryService,
   pricingService,
   orderService,
+  auditService,
   quoteResponse,
-  orderResponse
+  orderResponse,
+  auditEventResponse
 };
 
 export type StartedGrpcServer = {
@@ -500,6 +638,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   server.addService(inventoryPackage.InventoryService.service, inventoryService);
   server.addService(pricingPackage.PricingService.service, pricingService);
   server.addService(orderPackage.OrderService.service, orderService);
+  server.addService(auditPackage.AuditService.service, auditService);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
     server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
@@ -511,7 +650,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
     });
   });
 
-  console.log(`gRPC inventory, pricing, and order server running on ${boundPort}`);
+  console.log(`gRPC inventory, pricing, order, and audit server running on ${boundPort}`);
 
   return {
     port: boundPort,
