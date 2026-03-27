@@ -1,4 +1,5 @@
 import grpc from "@grpc/grpc-js";
+import { ReflectionService } from "@grpc/reflection";
 import protoLoader from "@grpc/proto-loader";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
@@ -984,6 +985,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   server.addService(healthPackage.Health.service, healthService);
   server.addService(notificationPackage.NotificationService.service, notificationService);
   server.addService(adminPackage.AdminService.service, adminService);
+  new ReflectionService(packageDefinition).addToServer(server);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
     server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
