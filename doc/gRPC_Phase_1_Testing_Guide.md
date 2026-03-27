@@ -1,4 +1,4 @@
-# gRPC Phase 1 and 2 Testing Guide
+# gRPC Phase 1, 2, and 3 Testing Guide
 
 Phase 1 and 2 add real gRPC services to the backend on port `50051`.
 
@@ -10,6 +10,10 @@ Phase 1 and 2 add real gRPC services to the backend on port `50051`.
 - `ResetInventory`
 - `GetQuote`
 - `StreamQuotes`
+- `CreateOrder`
+- `GetOrder`
+- `ListOrders`
+- `ResetOrders`
 
 Manual testing concepts now available:
 
@@ -22,6 +26,9 @@ Manual testing concepts now available:
 - unary pricing validation and business-rule testing
 - server-streaming practice with partial stream failure
 - deadline and interval tuning practice for streaming RPCs
+- multi-service orchestration and compensation logic
+- idempotent order creation
+- consistency checks after rollback
 
 ## Start the backend
 
@@ -136,6 +143,91 @@ grpcurl -plaintext \
 - frontend UI integration for gRPC-backed flows
 
 Those will be added in later phases.
+
+## Phase 3 order orchestration examples
+
+### 12. Create an order
+
+```bash
+grpcurl -plaintext \
+  -proto proto/order.proto \
+  -d '{"orderId":"order-100","sku":"SKU-RED-CHAIR","quantity":2,"currency":"USD"}' \
+  localhost:50051 automation.order.v1.OrderService/CreateOrder
+```
+
+Expected:
+
+- `order.orderId` is `order-100`
+- `order.reservationId` is populated
+- `order.status` is `created`
+- pricing fields are present
+
+### 13. Get the created order
+
+```bash
+grpcurl -plaintext \
+  -proto proto/order.proto \
+  -d '{"orderId":"order-100"}' \
+  localhost:50051 automation.order.v1.OrderService/GetOrder
+```
+
+### 14. List all orders
+
+```bash
+grpcurl -plaintext \
+  -proto proto/order.proto \
+  -d '{}' \
+  localhost:50051 automation.order.v1.OrderService/ListOrders
+```
+
+### 15. Test idempotent create
+
+Run the same `CreateOrder` request twice with the same `orderId`.
+
+Expected:
+
+- the second response returns the same order
+- no duplicate order is created
+
+### 16. Inject pricing-step failure with rollback
+
+```bash
+grpcurl -plaintext \
+  -proto proto/order.proto \
+  -H 'x-order-failure-step: pricing' \
+  -d '{"orderId":"order-fail-pricing","sku":"SKU-RED-CHAIR","quantity":1,"currency":"USD"}' \
+  localhost:50051 automation.order.v1.OrderService/CreateOrder
+```
+
+Expected:
+
+- gRPC error with status `INTERNAL`
+- inventory should be restored because reservation rollback is performed
+
+### 17. Inject persist-step failure with rollback
+
+```bash
+grpcurl -plaintext \
+  -proto proto/order.proto \
+  -H 'x-order-failure-step: persist' \
+  -d '{"orderId":"order-fail-persist","sku":"SKU-BLUE-DESK","quantity":1,"currency":"USD"}' \
+  localhost:50051 automation.order.v1.OrderService/CreateOrder
+```
+
+Expected:
+
+- gRPC error with status `INTERNAL`
+- no order should exist afterward
+- inventory should be restored
+
+### 18. Reset order state
+
+```bash
+grpcurl -plaintext \
+  -proto proto/order.proto \
+  -d '{}' \
+  localhost:50051 automation.order.v1.OrderService/ResetOrders
+```
 
 ## Phase 2 pricing examples
 
