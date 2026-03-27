@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package automation.order.v1;
+
+message Money {
+  string currency = 1;
+  int64 units = 2;
+  int32 nanos = 3;
+}
+
+message Order {
+  string order_id = 1;
+  string reservation_id = 2;
+  string sku = 3;
+  int32 quantity = 4;
+  Money unit_price = 5;
+  Money total_price = 6;
+  string currency = 7;
+  string pricing_rule = 8;
+  string status = 9;
+}
+
+message CreateOrderRequest {
+  string order_id = 1;
+  string sku = 2;
+  int32 quantity = 3;
+  string currency = 4;
+  int32 price_shift_basis_points = 5;
+}
+
+message CreateOrderResponse {
+  Order order = 1;
+  string correlation_id = 2;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+  string correlation_id = 2;
+}
+
+message ListOrdersRequest {}
+
+message ListOrdersResponse {
+  repeated Order orders = 1;
+  string correlation_id = 2;
+}
+
+message ResetOrdersRequest {}
+
+message ResetOrdersResponse {
+  int32 cleared = 1;
+  string correlation_id = 2;
+}
+
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+  rpc ResetOrders(ResetOrdersRequest) returns (ResetOrdersResponse);
+}

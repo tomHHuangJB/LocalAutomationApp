@@ -148,4 +148,121 @@ describe("gRPC server handlers", () => {
     });
     expect(validationErrors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
   });
+
+  it("covers order shaping and order handler branches", async () => {
+    const shaped = __testables.orderResponse(
+      {
+        orderId: "order-1",
+        reservationId: "res-order-1",
+        sku: "SKU-RED-CHAIR",
+        quantity: 2,
+        currency: "USD",
+        unitPriceCents: 12999,
+        totalPriceCents: 25998,
+        pricingRule: "standard-price",
+        status: "created"
+      },
+      "corr-order"
+    );
+    expect(shaped).toMatchObject({
+      correlationId: "corr-order",
+      order: {
+        orderId: "order-1",
+        reservationId: "res-order-1",
+        sku: "SKU-RED-CHAIR",
+        status: "created"
+      }
+    });
+
+    const injectedMetadata = new grpc.Metadata();
+    injectedMetadata.set("x-failure-mode", "resource_exhausted");
+    const createInjected = await invokeUnary(
+      __testables.orderService.CreateOrder,
+      { orderId: "order-injected", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" },
+      injectedMetadata
+    );
+    expect(createInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+
+    const missingSku = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "order-missing-sku",
+      sku: "",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect(missingSku.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const badQuantity = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "order-bad-qty",
+      sku: "SKU-RED-CHAIR",
+      quantity: 0,
+      currency: "USD"
+    });
+    expect(badQuantity.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const created = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "order-existing",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect((created.response as { order: { orderId: string } }).order.orderId).toBe("order-existing");
+
+    const existing = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "order-existing",
+      sku: "SKU-BLUE-DESK",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect((existing.response as { order: { orderId: string; sku: string } }).order.sku).toBe("SKU-RED-CHAIR");
+
+    const pricingFailMetadata = new grpc.Metadata();
+    pricingFailMetadata.set("x-order-failure-step", "pricing");
+    const pricingFailure = await invokeUnary(
+      __testables.orderService.CreateOrder,
+      { orderId: "order-pricing-fail", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" },
+      pricingFailMetadata
+    );
+    expect(pricingFailure.error?.code).toBe(grpc.status.INTERNAL);
+
+    const persistFailMetadata = new grpc.Metadata();
+    persistFailMetadata.set("x-order-failure-step", "persist");
+    const persistFailure = await invokeUnary(
+      __testables.orderService.CreateOrder,
+      { orderId: "order-persist-fail", sku: "SKU-BLUE-DESK", quantity: 1, currency: "USD" },
+      persistFailMetadata
+    );
+    expect(persistFailure.error?.code).toBe(grpc.status.INTERNAL);
+
+    const unknownSku = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "order-unknown-sku",
+      sku: "SKU-NOT-FOUND",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect(unknownSku.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const getInjected = await invokeUnary(__testables.orderService.GetOrder, { orderId: "order-existing" }, injectedMetadata);
+    expect(getInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+
+    const getMissingId = await invokeUnary(__testables.orderService.GetOrder, { orderId: "" });
+    expect(getMissingId.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const got = await invokeUnary(__testables.orderService.GetOrder, { orderId: "order-existing" });
+    expect((got.response as { order: { orderId: string } }).order.orderId).toBe("order-existing");
+
+    const getUnknown = await invokeUnary(__testables.orderService.GetOrder, { orderId: "missing-order" });
+    expect(getUnknown.error?.code).toBe(grpc.status.NOT_FOUND);
+
+    const listInjected = await invokeUnary(__testables.orderService.ListOrders, {}, injectedMetadata);
+    expect(listInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+
+    const listed = await invokeUnary(__testables.orderService.ListOrders, {});
+    expect((listed.response as { orders: Array<unknown> }).orders.length).toBeGreaterThan(0);
+
+    const resetInjected = await invokeUnary(__testables.orderService.ResetOrders, {}, injectedMetadata);
+    expect(resetInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+
+    const reset = await invokeUnary(__testables.orderService.ResetOrders, {});
+    expect((reset.response as { cleared: number }).cleared).toBeGreaterThan(0);
+  });
 });

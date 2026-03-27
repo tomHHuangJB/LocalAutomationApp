@@ -3,6 +3,7 @@ import protoLoader from "@grpc/proto-loader";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { InventoryStore, type FailureMode } from "./inventoryStore.js";
+import { OrderStore, type StoredOrder } from "./orderStore.js";
 import {
   PricingStore,
   pricingValidationError,
@@ -12,7 +13,8 @@ import {
 
 const inventoryProtoPath = fileURLToPath(new URL("../../proto/inventory.proto", import.meta.url));
 const pricingProtoPath = fileURLToPath(new URL("../../proto/pricing.proto", import.meta.url));
-const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath], {
+const orderProtoPath = fileURLToPath(new URL("../../proto/order.proto", import.meta.url));
+const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, orderProtoPath], {
   longs: String,
   enums: String,
   defaults: true,
@@ -21,9 +23,11 @@ const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProto
 const loaded = grpc.loadPackageDefinition(packageDefinition) as any;
 const inventoryPackage = loaded.automation.inventory.v1;
 const pricingPackage = loaded.automation.pricing.v1;
+const orderPackage = loaded.automation.order.v1;
 
 const store = new InventoryStore();
 const pricingStore = new PricingStore();
+const orderStore = new OrderStore();
 
 function correlationIdFromMetadata(metadata: grpc.Metadata): string {
   const header = metadata.get("x-correlation-id")[0];
@@ -69,6 +73,19 @@ function validationError(message: string, code: grpc.status): grpc.ServiceError 
     message,
     code
   } as grpc.ServiceError;
+}
+
+function orderValidationError(message: string, code: grpc.status): grpc.ServiceError {
+  return {
+    name: "OrderValidationError",
+    message,
+    code
+  } as grpc.ServiceError;
+}
+
+function orderFailureStepFromMetadata(metadata: grpc.Metadata): string {
+  const header = metadata.get("x-order-failure-step")[0];
+  return typeof header === "string" ? header : "";
 }
 
 const inventoryService = {
@@ -200,6 +217,23 @@ function quoteResponse(quote: ComputedQuote, correlationId: string) {
   };
 }
 
+function orderResponse(order: StoredOrder, correlationId: string) {
+  return {
+    order: {
+      orderId: order.orderId,
+      reservationId: order.reservationId,
+      sku: order.sku,
+      quantity: order.quantity,
+      unitPrice: toMoney(order.currency, order.unitPriceCents),
+      totalPrice: toMoney(order.currency, order.totalPriceCents),
+      currency: order.currency,
+      pricingRule: order.pricingRule,
+      status: order.status
+    },
+    correlationId
+  };
+}
+
 const pricingService = {
   async GetQuote(
     call: grpc.ServerUnaryCall<
@@ -299,10 +333,161 @@ const pricingService = {
   }
 };
 
+const orderService = {
+  async CreateOrder(
+    call: grpc.ServerUnaryCall<
+      {
+        orderId?: string;
+        sku?: string;
+        quantity?: number;
+        currency?: string;
+        priceShiftBasisPoints?: number;
+      },
+      unknown
+    >,
+    callback: grpc.sendUnaryData<unknown>
+  ): Promise<void> {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const correlationId = correlationIdFromMetadata(call.metadata);
+    const failureStep = orderFailureStepFromMetadata(call.metadata);
+    const orderId = String(call.request?.orderId ?? "").trim() || randomUUID();
+    const sku = String(call.request?.sku ?? "").trim();
+    const quantity = Number(call.request?.quantity ?? 0);
+    const currency = String(call.request?.currency ?? "USD");
+    const priceShiftBasisPoints = Number(call.request?.priceShiftBasisPoints ?? 0);
+    const reservationId = `res-${orderId}`;
+
+    try {
+      if (!sku) {
+        throw orderValidationError("sku is required", grpc.status.INVALID_ARGUMENT);
+      }
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        throw orderValidationError("quantity must be a positive integer", grpc.status.INVALID_ARGUMENT);
+      }
+
+      const existing = orderStore.list().find((order) => order.orderId === orderId);
+      if (existing) {
+        callback(null, orderResponse(existing, correlationId));
+        return;
+      }
+
+      const reservation = store.reserve(sku, quantity, reservationId);
+
+      try {
+        if (failureStep === "pricing") {
+          throw new Error("Injected pricing step failure");
+        }
+
+        const quote = await pricingStore.getQuote({
+          sku,
+          quantity,
+          currency,
+          shiftBasisPoints: priceShiftBasisPoints,
+          delayMs: 0
+        });
+
+        if (failureStep === "persist") {
+          throw new Error("Injected persist step failure");
+        }
+
+        const order = orderStore.create({
+          orderId,
+          reservationId: reservation.reservationId,
+          sku: reservation.sku,
+          quantity: reservation.quantity,
+          currency: quote.currency,
+          unitPriceCents: quote.unitPriceCents,
+          totalPriceCents: quote.totalPriceCents,
+          pricingRule: quote.pricingRule,
+          status: "created"
+        });
+
+        callback(null, orderResponse(order, correlationId));
+      } catch (error) {
+        store.release(reservation.reservationId);
+        if (error instanceof Error && error.message.startsWith("Injected ")) {
+          callback(orderValidationError(error.message, grpc.status.INTERNAL), null);
+          return;
+        }
+        const serviceError = pricingValidationError(error as Error);
+        callback(serviceError, null);
+      }
+    } catch (error) {
+      const serviceError = (error as grpc.ServiceError).code
+        ? (error as grpc.ServiceError)
+        : orderValidationError((error as Error).message, grpc.status.INVALID_ARGUMENT);
+      callback(serviceError, null);
+    }
+  },
+
+  GetOrder(
+    call: grpc.ServerUnaryCall<{ orderId?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const orderId = String(call.request?.orderId ?? "").trim();
+    if (!orderId) {
+      callback(orderValidationError("orderId is required", grpc.status.INVALID_ARGUMENT), null);
+      return;
+    }
+
+    try {
+      const order = orderStore.get(orderId);
+      callback(null, orderResponse(order, correlationIdFromMetadata(call.metadata)));
+    } catch (error) {
+      callback(orderValidationError((error as Error).message, grpc.status.NOT_FOUND), null);
+    }
+  },
+
+  ListOrders(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      orders: orderStore.list().map((order) => orderResponse(order, "").order),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  },
+
+  ResetOrders(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      cleared: orderStore.reset(),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  }
+};
+
 export const __testables = {
   inventoryService,
   pricingService,
-  quoteResponse
+  orderService,
+  quoteResponse,
+  orderResponse
 };
 
 export type StartedGrpcServer = {
@@ -314,6 +499,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   const server = new grpc.Server();
   server.addService(inventoryPackage.InventoryService.service, inventoryService);
   server.addService(pricingPackage.PricingService.service, pricingService);
+  server.addService(orderPackage.OrderService.service, orderService);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
     server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
@@ -325,7 +511,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
     });
   });
 
-  console.log(`gRPC inventory and pricing server running on ${boundPort}`);
+  console.log(`gRPC inventory, pricing, and order server running on ${boundPort}`);
 
   return {
     port: boundPort,

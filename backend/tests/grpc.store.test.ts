@@ -1,5 +1,6 @@
 import grpc from "@grpc/grpc-js";
 import { InventoryStore } from "../src/grpc/inventoryStore.js";
+import { OrderStore } from "../src/grpc/orderStore.js";
 import { PricingStore, pricingValidationError, toMoney } from "../src/grpc/pricingStore.js";
 
 describe("gRPC stores", () => {
@@ -119,5 +120,45 @@ describe("gRPC stores", () => {
         delayMs: 6000
       })
     ).rejects.toThrow("delayMs must be an integer between 0 and 5000");
+  });
+
+  it("supports order create, idempotent create, list, get, and reset", () => {
+    const store = new OrderStore();
+
+    const created = store.create({
+      orderId: "order-1",
+      reservationId: "res-order-1",
+      sku: "SKU-RED-CHAIR",
+      quantity: 2,
+      currency: "USD",
+      unitPriceCents: 12999,
+      totalPriceCents: 25998,
+      pricingRule: "standard-price",
+      status: "created"
+    });
+    expect(created.orderId).toBe("order-1");
+
+    const duplicate = store.create({
+      orderId: "order-1",
+      reservationId: "res-order-1b",
+      sku: "SKU-BLUE-DESK",
+      quantity: 1,
+      currency: "USD",
+      unitPriceCents: 100,
+      totalPriceCents: 100,
+      pricingRule: "ignored",
+      status: "created"
+    });
+    expect(duplicate.sku).toBe("SKU-RED-CHAIR");
+
+    expect(store.get("order-1").reservationId).toBe("res-order-1");
+    expect(store.list()).toHaveLength(1);
+    expect(store.reset()).toBe(1);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("raises order lookup error for unknown order", () => {
+    const store = new OrderStore();
+    expect(() => store.get("missing-order")).toThrow("Unknown order: missing-order");
   });
 });
