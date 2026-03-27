@@ -6,6 +6,7 @@ import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import { deterministicBehavior } from "./middlewares/deterministic.js";
 import sqlite3 from "sqlite3";
+import { startGrpcServer, type StartedGrpcServer } from "./grpc/server.js";
 
 const app = express();
 const server = createServer(app);
@@ -368,10 +369,41 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 const port = Number(process.env.PORT ?? 3001);
-if (process.env.NODE_ENV !== "test") {
-  server.listen(port, () => {
-    console.log(`API server running on ${port}`);
+let grpcServer: StartedGrpcServer | undefined;
+
+async function shutdown(): Promise<void> {
+  if (grpcServer) {
+    await grpcServer.shutdown();
+    grpcServer = undefined;
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
   });
 }
 
-export { app, server };
+if (process.env.NODE_ENV !== "test") {
+  server.listen(port, async () => {
+    console.log(`API server running on ${port}`);
+    grpcServer = await startGrpcServer();
+  });
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      void shutdown()
+        .catch((error) => {
+          console.error("Shutdown failure", error);
+        })
+        .finally(() => {
+          process.exit(0);
+        });
+    });
+  }
+}
+
+export { app, server, shutdown };

@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package automation.inventory.v1;
+
+message GetStockRequest {
+  string sku = 1;
+}
+
+message StockItem {
+  string sku = 1;
+  int32 available = 2;
+}
+
+message GetStockResponse {
+  StockItem item = 1;
+  string correlation_id = 2;
+}
+
+message ReserveStockRequest {
+  string sku = 1;
+  int32 quantity = 2;
+  string reservation_id = 3;
+}
+
+message ReserveStockResponse {
+  string reservation_id = 1;
+  string sku = 2;
+  int32 reserved_quantity = 3;
+  int32 remaining_stock = 4;
+  string correlation_id = 5;
+}
+
+message ReleaseStockRequest {
+  string reservation_id = 1;
+}
+
+message ReleaseStockResponse {
+  string reservation_id = 1;
+  string sku = 2;
+  int32 released_quantity = 3;
+  int32 available_after_release = 4;
+  string correlation_id = 5;
+}
+
+message ResetInventoryRequest {}
+
+message ResetInventoryResponse {
+  repeated StockItem items = 1;
+  string correlation_id = 2;
+}
+
+service InventoryService {
+  rpc GetStock(GetStockRequest) returns (GetStockResponse);
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+  rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
+  rpc ResetInventory(ResetInventoryRequest) returns (ResetInventoryResponse);
+}
