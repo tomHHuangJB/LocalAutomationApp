@@ -111,16 +111,25 @@ function loadClient(port: number): GrpcClient {
 
 function clientStream<TResponse>(
   fn: Function,
-  items: Array<Record<string, unknown>>
+  items: Array<Record<string, unknown>>,
+  metadata?: grpc.Metadata
 ): Promise<TResponse> {
   return new Promise((resolve, reject) => {
-    const stream = fn((error: grpc.ServiceError | null, response: TResponse) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(response);
-    });
+    const stream = metadata
+      ? fn(metadata, (error: grpc.ServiceError | null, response: TResponse) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(response);
+        })
+      : fn((error: grpc.ServiceError | null, response: TResponse) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(response);
+        });
 
     for (const item of items) {
       stream.write(item);
@@ -147,6 +156,15 @@ function unary<T>(fn: Function, request: unknown, metadata?: grpc.Metadata): Pro
   });
 }
 
+function authMetadata(apiKey: string, role?: string): grpc.Metadata {
+  const metadata = new grpc.Metadata();
+  metadata.set("x-api-key", apiKey);
+  if (role) {
+    metadata.set("x-user-role", role);
+  }
+  return metadata;
+}
+
 describe("gRPC integration", () => {
   let grpcServer: StartedGrpcServer;
   let client: GrpcClient;
@@ -164,8 +182,13 @@ describe("gRPC integration", () => {
   it("handles inventory workflow and metadata passthrough", async () => {
     const metadata = new grpc.Metadata();
     metadata.set("x-correlation-id", "inventory-check");
+    const securedUser = authMetadata("test-user-key", "user");
 
-    const reset = await unary<{ items: Array<{ sku: string; available: number }> }>(client.ResetInventory.bind(client), {});
+    const reset = await unary<{ items: Array<{ sku: string; available: number }> }>(
+      client.ResetInventory.bind(client),
+      {},
+      authMetadata("test-admin-key", "admin")
+    );
     expect(reset.items).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-RED-CHAIR", available: 12 })]));
 
     const before = await unary<{ item: { available: number }; correlationId: string }>(
@@ -176,47 +199,78 @@ describe("gRPC integration", () => {
     expect(before.item.available).toBe(12);
     expect(before.correlationId).toBe("inventory-check");
 
-    const reserved = await unary<{ remainingStock: number; reservationId: string }>(client.ReserveStock.bind(client), {
-      sku: "SKU-RED-CHAIR",
-      quantity: 2,
-      reservationId: "res-ci"
-    });
+    const reserved = await unary<{ remainingStock: number; reservationId: string }>(
+      client.ReserveStock.bind(client),
+      {
+        sku: "SKU-RED-CHAIR",
+        quantity: 2,
+        reservationId: "res-ci"
+      },
+      securedUser
+    );
     expect(reserved.remainingStock).toBe(10);
 
-    const duplicate = await unary<{ remainingStock: number; reservationId: string }>(client.ReserveStock.bind(client), {
-      sku: "SKU-RED-CHAIR",
-      quantity: 2,
-      reservationId: "res-ci"
-    });
+    const duplicate = await unary<{ remainingStock: number; reservationId: string }>(
+      client.ReserveStock.bind(client),
+      {
+        sku: "SKU-RED-CHAIR",
+        quantity: 2,
+        reservationId: "res-ci"
+      },
+      securedUser
+    );
     expect(duplicate.reservationId).toBe("res-ci");
     expect(duplicate.remainingStock).toBe(10);
 
-    const released = await unary<{ availableAfterRelease: number }>(client.ReleaseStock.bind(client), {
-      reservationId: "res-ci"
-    });
+    const released = await unary<{ availableAfterRelease: number }>(
+      client.ReleaseStock.bind(client),
+      {
+        reservationId: "res-ci"
+      },
+      securedUser
+    );
     expect(released.availableAfterRelease).toBe(12);
   });
 
   it("returns expected inventory gRPC errors", async () => {
+    await expect(
+      unary(client.ReserveStock.bind(client), { sku: "SKU-RED-CHAIR", quantity: 1, reservationId: "missing-auth" })
+    ).rejects.toMatchObject({
+      code: grpc.status.UNAUTHENTICATED
+    });
+
     await expect(unary(client.GetStock.bind(client), { sku: "" })).rejects.toMatchObject({
       code: grpc.status.INVALID_ARGUMENT
     });
 
     await expect(
-      unary(client.ReserveStock.bind(client), { sku: "SKU-BLUE-DESK", quantity: 99, reservationId: "too-many" })
+      unary(
+        client.ReserveStock.bind(client),
+        { sku: "SKU-BLUE-DESK", quantity: 99, reservationId: "too-many" },
+        authMetadata("test-user-key", "user")
+      )
     ).rejects.toMatchObject({
       code: grpc.status.FAILED_PRECONDITION
     });
 
-    await expect(unary(client.ReleaseStock.bind(client), { reservationId: "missing" })).rejects.toMatchObject({
-      code: grpc.status.NOT_FOUND
-    });
+    await expect(
+      unary(client.ReleaseStock.bind(client), { reservationId: "missing" }, authMetadata("test-user-key", "user"))
+    ).rejects.toMatchObject({ code: grpc.status.NOT_FOUND });
+
+    await expect(
+      unary(
+        client.ResetInventory.bind(client),
+        {},
+        authMetadata("test-user-key", "user")
+      )
+    ).rejects.toMatchObject({ code: grpc.status.PERMISSION_DENIED });
 
     const failureMetadata = new grpc.Metadata();
     failureMetadata.set("x-failure-mode", "resource_exhausted");
-    await expect(unary(client.GetStock.bind(client), { sku: "SKU-RED-CHAIR" }, failureMetadata)).rejects.toMatchObject({
-      code: grpc.status.RESOURCE_EXHAUSTED
-    });
+    failureMetadata.set("x-api-key", "test-user-key");
+    await expect(
+      unary(client.ReserveStock.bind(client), { sku: "SKU-RED-CHAIR", quantity: 1, reservationId: "fail-auth" }, failureMetadata)
+    ).rejects.toMatchObject({ code: grpc.status.RESOURCE_EXHAUSTED });
   });
 
   it("returns pricing quotes, handles validation, and surfaces metadata failures", async () => {
@@ -277,9 +331,9 @@ describe("gRPC integration", () => {
   });
 
   it("supports notification bidirectional streaming, replay, and state inspection", async () => {
-    await unary<{ cleared: number }>(client.ResetNotifications.bind(client), {});
+    await unary<{ cleared: number }>(client.ResetNotifications.bind(client), {}, authMetadata("test-admin-key", "admin"));
 
-    const subscriber = client.Connect();
+    const subscriber = client.Connect(authMetadata("test-user-key", "user"));
     const subscriberEvents: Array<{ connected?: { channel: string }; broadcast?: { messageId: string; replay?: boolean } }> = [];
     subscriber.on("data", (message: { connected?: { channel: string }; broadcast?: { messageId: string; replay?: boolean } }) => {
       subscriberEvents.push(message);
@@ -297,7 +351,7 @@ describe("gRPC integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(subscriberEvents).toContainEqual(expect.objectContaining({ connected: expect.objectContaining({ channel: "ops" }) }));
 
-    const publisher = client.Connect();
+    const publisher = client.Connect(authMetadata("test-user-key", "user"));
     const publisherEvents: Array<{ ack?: { messageId: string; sequenceNumber: number } }> = [];
     publisher.on("data", (message: { ack?: { messageId: string; sequenceNumber: number } }) => {
       publisherEvents.push(message);
@@ -321,7 +375,7 @@ describe("gRPC integration", () => {
       expect.objectContaining({ broadcast: expect.objectContaining({ messageId: "msg-ci-1", replay: false }) })
     );
 
-    const replayClient = client.Connect();
+    const replayClient = client.Connect(authMetadata("test-user-key", "user"));
     const replayEvents: Array<{ broadcast?: { messageId: string; replay?: boolean } }> = [];
     replayClient.on("data", (message: { broadcast?: { messageId: string; replay?: boolean } }) => {
       replayEvents.push(message);
@@ -342,7 +396,8 @@ describe("gRPC integration", () => {
 
     const listed = await unary<{ notifications: Array<{ messageId: string; channel: string }> }>(
       client.ListNotifications.bind(client),
-      { channel: "ops" }
+      { channel: "ops" },
+      authMetadata("test-user-key", "user")
     );
     expect(listed.notifications).toEqual([expect.objectContaining({ messageId: "msg-ci-1", channel: "ops" })]);
 
@@ -352,13 +407,17 @@ describe("gRPC integration", () => {
   });
 
   it("provides admin snapshot and reset across all gRPC-backed state", async () => {
-    await unary(client.ResetAllState.bind(client), {});
+    const adminMetadata = authMetadata("test-admin-key", "admin");
+    const userMetadata = authMetadata("test-user-key", "user");
+    const serviceMetadata = authMetadata("test-service-key", "service");
+
+    await unary(client.ResetAllState.bind(client), {}, adminMetadata);
 
     await unary(client.ReserveStock.bind(client), {
       sku: "SKU-RED-CHAIR",
       quantity: 1,
       reservationId: "admin-res-1"
-    });
+    }, userMetadata);
 
     await unary(client.GetQuote.bind(client), {
       sku: "SKU-BLUE-DESK",
@@ -371,7 +430,7 @@ describe("gRPC integration", () => {
       sku: "SKU-BLUE-DESK",
       quantity: 1,
       currency: "USD"
-    });
+    }, userMetadata);
 
     await clientStream(client.IngestAuditEvents.bind(client), [
       {
@@ -381,9 +440,9 @@ describe("gRPC integration", () => {
         payload: "ok",
         eventTimeEpochMs: "1710000000000"
       }
-    ]);
+    ], serviceMetadata);
 
-    const notificationStream = client.Connect();
+    const notificationStream = client.Connect(userMetadata);
     notificationStream.on("error", () => undefined);
     notificationStream.write({
       publish: {
@@ -401,7 +460,7 @@ describe("gRPC integration", () => {
       orders: { orderCount: number };
       audit: { eventCount: number };
       notifications: { notificationCount: number; activeChannelSubscriberCount: number };
-    }>(client.GetSystemSnapshot.bind(client), {});
+    }>(client.GetSystemSnapshot.bind(client), {}, adminMetadata);
     expect(snapshot.inventory.skuCount).toBe(3);
     expect(snapshot.inventory.activeReservationCount).toBe(2);
     expect(snapshot.orders.orderCount).toBe(1);
@@ -414,12 +473,42 @@ describe("gRPC integration", () => {
       clearedNotifications: number;
       remainingInventoryReservations: number;
       inventory: Array<{ sku: string; available: number }>;
-    }>(client.ResetAllState.bind(client), {});
+    }>(client.ResetAllState.bind(client), {}, adminMetadata);
     expect(reset.clearedOrders).toBe(1);
     expect(reset.clearedAuditEvents).toBe(1);
     expect(reset.clearedNotifications).toBe(1);
     expect(reset.remainingInventoryReservations).toBe(0);
     expect(reset.inventory).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-RED-CHAIR", available: 12 })]));
+  });
+
+  it("enforces metadata auth and role checks on protected gRPC methods", async () => {
+    await expect(unary(client.GetSystemSnapshot.bind(client), {})).rejects.toMatchObject({
+      code: grpc.status.UNAUTHENTICATED
+    });
+
+    await expect(
+      unary(client.GetSystemSnapshot.bind(client), {}, authMetadata("test-user-key", "user"))
+    ).rejects.toMatchObject({
+      code: grpc.status.PERMISSION_DENIED
+    });
+
+    await expect(
+      unary(client.ListAuditEvents.bind(client), { eventType: "" }, authMetadata("test-user-key", "user"))
+    ).rejects.toMatchObject({
+      code: grpc.status.PERMISSION_DENIED
+    });
+
+    await expect(
+      unary(client.CreateOrder.bind(client), { orderId: "auth-order", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" })
+    ).rejects.toMatchObject({
+      code: grpc.status.UNAUTHENTICATED
+    });
+
+    await expect(
+      unary(client.CreateOrder.bind(client), { orderId: "auth-order", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" }, authMetadata("test-user-key", "admin"))
+    ).rejects.toMatchObject({
+      code: grpc.status.PERMISSION_DENIED
+    });
   });
 
 });

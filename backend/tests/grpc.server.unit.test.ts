@@ -22,6 +22,7 @@ describe("gRPC server handlers", () => {
   it("covers inventory validation and injected failure branches", async () => {
     const failureMetadata = new grpc.Metadata();
     failureMetadata.set("x-failure-mode", "internal");
+    failureMetadata.set("x-api-key", "test-user-key");
 
     const getStockFailure = await invokeUnary(__testables.inventoryService.GetStock, { sku: "SKU-RED-CHAIR" }, failureMetadata);
     expect(getStockFailure.error?.code).toBe(grpc.status.INTERNAL);
@@ -32,19 +33,31 @@ describe("gRPC server handlers", () => {
     const reserveFailure = await invokeUnary(__testables.inventoryService.ReserveStock, { sku: "SKU-RED-CHAIR", quantity: 1 }, failureMetadata);
     expect(reserveFailure.error?.code).toBe(grpc.status.INTERNAL);
 
-    const reserveMissingSku = await invokeUnary(__testables.inventoryService.ReserveStock, { sku: "", quantity: 1 });
+    const reserveMissingAuth = await invokeUnary(__testables.inventoryService.ReserveStock, { sku: "SKU-RED-CHAIR", quantity: 1 });
+    expect(reserveMissingAuth.error?.code).toBe(grpc.status.UNAUTHENTICATED);
+
+    const userMetadata = new grpc.Metadata();
+    userMetadata.set("x-api-key", "test-user-key");
+
+    const reserveMissingSku = await invokeUnary(__testables.inventoryService.ReserveStock, { sku: "", quantity: 1 }, userMetadata);
     expect(reserveMissingSku.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
-    const reserveBadQty = await invokeUnary(__testables.inventoryService.ReserveStock, { sku: "SKU-RED-CHAIR", quantity: 0 });
+    const reserveBadQty = await invokeUnary(__testables.inventoryService.ReserveStock, { sku: "SKU-RED-CHAIR", quantity: 0 }, userMetadata);
     expect(reserveBadQty.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
     const releaseFailure = await invokeUnary(__testables.inventoryService.ReleaseStock, { reservationId: "res-any" }, failureMetadata);
     expect(releaseFailure.error?.code).toBe(grpc.status.INTERNAL);
 
-    const releaseMissingId = await invokeUnary(__testables.inventoryService.ReleaseStock, { reservationId: "" });
+    const releaseMissingId = await invokeUnary(__testables.inventoryService.ReleaseStock, { reservationId: "" }, userMetadata);
     expect(releaseMissingId.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
-    const resetFailure = await invokeUnary(__testables.inventoryService.ResetInventory, {}, failureMetadata);
+    const resetDenied = await invokeUnary(__testables.inventoryService.ResetInventory, {}, userMetadata);
+    expect(resetDenied.error?.code).toBe(grpc.status.PERMISSION_DENIED);
+
+    const adminFailure = new grpc.Metadata();
+    adminFailure.set("x-api-key", "test-admin-key");
+    adminFailure.set("x-failure-mode", "internal");
+    const resetFailure = await invokeUnary(__testables.inventoryService.ResetInventory, {}, adminFailure);
     expect(resetFailure.error?.code).toBe(grpc.status.INTERNAL);
   });
 
@@ -100,6 +113,7 @@ describe("gRPC server handlers", () => {
 
     const injectedMetadata = new grpc.Metadata();
     injectedMetadata.set("x-failure-mode", "deadline_exceeded");
+    injectedMetadata.set("x-api-key", "test-user-key");
     const destroyedErrors: Array<grpc.ServiceError> = [];
 
     await __testables.pricingService.StreamQuotes({
@@ -124,13 +138,35 @@ describe("gRPC server handlers", () => {
         initialShiftBasisPoints: 0,
         stepBasisPoints: 10
       },
-      metadata: new grpc.Metadata(),
+      metadata: injectedMetadata,
       destroy: (error: grpc.ServiceError) => failAfterErrors.push(error),
       write: (item: unknown) => writes.push(item),
       end: () => undefined
     });
-    expect(writes).toHaveLength(1);
-    expect(failAfterErrors[0]?.code).toBe(grpc.status.UNAVAILABLE);
+    expect(failAfterErrors[0]?.code).toBe(grpc.status.DEADLINE_EXCEEDED);
+
+    const authedMetadata = new grpc.Metadata();
+    authedMetadata.set("x-api-key", "test-user-key");
+    const authErrors: Array<grpc.ServiceError> = [];
+    const authWrites: Array<unknown> = [];
+    await __testables.pricingService.StreamQuotes({
+      request: {
+        sku: "SKU-RED-CHAIR",
+        quantity: 1,
+        currency: "USD",
+        updatesCount: 3,
+        intervalMs: 0,
+        failAfterItem: 1,
+        initialShiftBasisPoints: 0,
+        stepBasisPoints: 10
+      },
+      metadata: authedMetadata,
+      destroy: (error: grpc.ServiceError) => authErrors.push(error),
+      write: (item: unknown) => authWrites.push(item),
+      end: () => undefined
+    });
+    expect(authWrites).toHaveLength(1);
+    expect(authErrors[0]?.code).toBe(grpc.status.UNAVAILABLE);
 
     const validationErrors: Array<grpc.ServiceError> = [];
     await __testables.pricingService.StreamQuotes({
@@ -141,7 +177,8 @@ describe("gRPC server handlers", () => {
         updatesCount: 1,
         intervalMs: 0
       },
-      metadata: new grpc.Metadata(),
+      metadata: authedMetadata,
+      destroy: (error: grpc.ServiceError) => failAfterErrors.push(error),
       destroy: (error: grpc.ServiceError) => validationErrors.push(error),
       write: () => undefined,
       end: () => undefined
@@ -176,6 +213,7 @@ describe("gRPC server handlers", () => {
 
     const injectedMetadata = new grpc.Metadata();
     injectedMetadata.set("x-failure-mode", "resource_exhausted");
+    injectedMetadata.set("x-api-key", "test-user-key");
     const createInjected = await invokeUnary(
       __testables.orderService.CreateOrder,
       { orderId: "order-injected", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" },
@@ -183,12 +221,33 @@ describe("gRPC server handlers", () => {
     );
     expect(createInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
 
+    const missingAuth = await invokeUnary(__testables.orderService.CreateOrder, {
+      orderId: "order-missing-auth",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect(missingAuth.error?.code).toBe(grpc.status.UNAUTHENTICATED);
+
+    const roleMismatch = new grpc.Metadata();
+    roleMismatch.set("x-api-key", "test-user-key");
+    roleMismatch.set("x-user-role", "admin");
+    const mismatch = await invokeUnary(
+      __testables.orderService.CreateOrder,
+      { orderId: "order-role-mismatch", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" },
+      roleMismatch
+    );
+    expect(mismatch.error?.code).toBe(grpc.status.PERMISSION_DENIED);
+
+    const userMetadata = new grpc.Metadata();
+    userMetadata.set("x-api-key", "test-user-key");
+
     const missingSku = await invokeUnary(__testables.orderService.CreateOrder, {
       orderId: "order-missing-sku",
       sku: "",
       quantity: 1,
       currency: "USD"
-    });
+    }, userMetadata);
     expect(missingSku.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
     const badQuantity = await invokeUnary(__testables.orderService.CreateOrder, {
@@ -196,7 +255,7 @@ describe("gRPC server handlers", () => {
       sku: "SKU-RED-CHAIR",
       quantity: 0,
       currency: "USD"
-    });
+    }, userMetadata);
     expect(badQuantity.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
     const created = await invokeUnary(__testables.orderService.CreateOrder, {
@@ -204,7 +263,7 @@ describe("gRPC server handlers", () => {
       sku: "SKU-RED-CHAIR",
       quantity: 1,
       currency: "USD"
-    });
+    }, userMetadata);
     expect((created.response as { order: { orderId: string } }).order.orderId).toBe("order-existing");
 
     const existing = await invokeUnary(__testables.orderService.CreateOrder, {
@@ -212,11 +271,12 @@ describe("gRPC server handlers", () => {
       sku: "SKU-BLUE-DESK",
       quantity: 1,
       currency: "USD"
-    });
+    }, userMetadata);
     expect((existing.response as { order: { orderId: string; sku: string } }).order.sku).toBe("SKU-RED-CHAIR");
 
     const pricingFailMetadata = new grpc.Metadata();
     pricingFailMetadata.set("x-order-failure-step", "pricing");
+    pricingFailMetadata.set("x-api-key", "test-user-key");
     const pricingFailure = await invokeUnary(
       __testables.orderService.CreateOrder,
       { orderId: "order-pricing-fail", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD" },
@@ -226,6 +286,7 @@ describe("gRPC server handlers", () => {
 
     const persistFailMetadata = new grpc.Metadata();
     persistFailMetadata.set("x-order-failure-step", "persist");
+    persistFailMetadata.set("x-api-key", "test-user-key");
     const persistFailure = await invokeUnary(
       __testables.orderService.CreateOrder,
       { orderId: "order-persist-fail", sku: "SKU-BLUE-DESK", quantity: 1, currency: "USD" },
@@ -238,31 +299,33 @@ describe("gRPC server handlers", () => {
       sku: "SKU-NOT-FOUND",
       quantity: 1,
       currency: "USD"
-    });
+    }, userMetadata);
     expect(unknownSku.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
     const getInjected = await invokeUnary(__testables.orderService.GetOrder, { orderId: "order-existing" }, injectedMetadata);
     expect(getInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
 
-    const getMissingId = await invokeUnary(__testables.orderService.GetOrder, { orderId: "" });
+    const getMissingId = await invokeUnary(__testables.orderService.GetOrder, { orderId: "" }, userMetadata);
     expect(getMissingId.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
 
-    const got = await invokeUnary(__testables.orderService.GetOrder, { orderId: "order-existing" });
+    const got = await invokeUnary(__testables.orderService.GetOrder, { orderId: "order-existing" }, userMetadata);
     expect((got.response as { order: { orderId: string } }).order.orderId).toBe("order-existing");
 
-    const getUnknown = await invokeUnary(__testables.orderService.GetOrder, { orderId: "missing-order" });
+    const getUnknown = await invokeUnary(__testables.orderService.GetOrder, { orderId: "missing-order" }, userMetadata);
     expect(getUnknown.error?.code).toBe(grpc.status.NOT_FOUND);
 
     const listInjected = await invokeUnary(__testables.orderService.ListOrders, {}, injectedMetadata);
     expect(listInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
 
-    const listed = await invokeUnary(__testables.orderService.ListOrders, {});
+    const listed = await invokeUnary(__testables.orderService.ListOrders, {}, userMetadata);
     expect((listed.response as { orders: Array<unknown> }).orders.length).toBeGreaterThan(0);
 
-    const resetInjected = await invokeUnary(__testables.orderService.ResetOrders, {}, injectedMetadata);
-    expect(resetInjected.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+    const resetDenied = await invokeUnary(__testables.orderService.ResetOrders, {}, userMetadata);
+    expect(resetDenied.error?.code).toBe(grpc.status.PERMISSION_DENIED);
 
-    const reset = await invokeUnary(__testables.orderService.ResetOrders, {});
+    const adminMetadata = new grpc.Metadata();
+    adminMetadata.set("x-api-key", "test-admin-key");
+    const reset = await invokeUnary(__testables.orderService.ResetOrders, {}, adminMetadata);
     expect((reset.response as { cleared: number }).cleared).toBeGreaterThan(0);
   });
 
@@ -342,6 +405,7 @@ describe("gRPC server handlers", () => {
 
     const injectedMetadata = new grpc.Metadata();
     injectedMetadata.set("x-failure-mode", "internal");
+    injectedMetadata.set("x-api-key", "test-admin-key");
 
     const resetInjected = await invokeUnary(__testables.notificationService.ResetNotifications, {}, injectedMetadata);
     expect(resetInjected.error?.code).toBe(grpc.status.INTERNAL);
@@ -376,14 +440,15 @@ describe("gRPC server handlers", () => {
       destroy: (error: grpc.ServiceError) => destroyErrors.push(error)
     });
 
-    handlers.get("data")?.({ subscribe: { clientId: "", channel: "ops", replayRecent: 0 } });
-    expect(destroyErrors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
+    expect(destroyErrors[0]?.code).toBe(grpc.status.UNAUTHENTICATED);
 
     const secondHandlers = new Map<string, Function>();
     const secondWrites: Array<unknown> = [];
     const secondDestroyErrors: Array<grpc.ServiceError> = [];
+    const userMetadata = new grpc.Metadata();
+    userMetadata.set("x-api-key", "test-user-key");
     __testables.notificationService.Connect({
-      metadata: new grpc.Metadata(),
+      metadata: userMetadata,
       on: (event: string, handler: Function) => {
         secondHandlers.set(event, handler);
         return undefined;
@@ -395,8 +460,27 @@ describe("gRPC server handlers", () => {
       destroy: (error: grpc.ServiceError) => secondDestroyErrors.push(error)
     });
 
-    secondHandlers.get("data")?.({ subscribe: { clientId: "sub-1", channel: "ops", replayRecent: 0 } });
-    secondHandlers.get("data")?.({
+    secondHandlers.get("data")?.({ subscribe: { clientId: "", channel: "ops", replayRecent: 0 } });
+    expect(secondDestroyErrors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const thirdHandlers = new Map<string, Function>();
+    const thirdWrites: Array<unknown> = [];
+    const thirdDestroyErrors: Array<grpc.ServiceError> = [];
+    __testables.notificationService.Connect({
+      metadata: userMetadata,
+      on: (event: string, handler: Function) => {
+        thirdHandlers.set(event, handler);
+        return undefined;
+      },
+      write: (payload: unknown) => thirdWrites.push(payload),
+      end: () => {
+        ended += 1;
+      },
+      destroy: (error: grpc.ServiceError) => thirdDestroyErrors.push(error)
+    });
+
+    thirdHandlers.get("data")?.({ subscribe: { clientId: "sub-1", channel: "ops", replayRecent: 0 } });
+    thirdHandlers.get("data")?.({
       publish: {
         messageId: "msg-2",
         channel: "ops",
@@ -405,38 +489,45 @@ describe("gRPC server handlers", () => {
         failAfterAckCount: 1
       }
     });
-    expect(secondWrites).toContainEqual(
+    expect(thirdWrites).toContainEqual(
       expect.objectContaining({ connected: expect.objectContaining({ clientId: "sub-1", channel: "ops" }) })
     );
-    expect(secondWrites).toContainEqual(
+    expect(thirdWrites).toContainEqual(
       expect.objectContaining({ ack: expect.objectContaining({ messageId: "msg-2", sequenceNumber: 1 }) })
     );
-    expect(secondWrites).toContainEqual(
+    expect(thirdWrites).toContainEqual(
       expect.objectContaining({ broadcast: expect.objectContaining({ messageId: "msg-2", replay: false }) })
     );
-    expect(secondDestroyErrors[0]?.code).toBe(grpc.status.UNAVAILABLE);
+    expect(thirdDestroyErrors[0]?.code).toBe(grpc.status.UNAVAILABLE);
 
-    secondHandlers.get("error")?.(new Error("stream boom"));
-    secondHandlers.get("end")?.();
+    thirdHandlers.get("error")?.(new Error("stream boom"));
+    thirdHandlers.get("end")?.();
     expect(ended).toBeGreaterThan(0);
   });
 
   it("covers admin handlers", async () => {
     const failureMetadata = new grpc.Metadata();
     failureMetadata.set("x-failure-mode", "deadline_exceeded");
+    failureMetadata.set("x-api-key", "test-admin-key");
 
     const snapshotInjected = await invokeUnary(__testables.adminService.GetSystemSnapshot, {}, failureMetadata);
     expect(snapshotInjected.error?.code).toBe(grpc.status.DEADLINE_EXCEEDED);
+
+    const orderUserMetadata = new grpc.Metadata();
+    orderUserMetadata.set("x-api-key", "test-user-key");
 
     const seededOrder = await invokeUnary(__testables.orderService.CreateOrder, {
       orderId: "admin-unit-order",
       sku: "SKU-RED-CHAIR",
       quantity: 1,
       currency: "USD"
-    });
+    }, orderUserMetadata);
     expect((seededOrder.response as { order: { orderId: string } }).order.orderId).toBe("admin-unit-order");
 
-    const snapshot = await invokeUnary(__testables.adminService.GetSystemSnapshot, {});
+    const adminMetadata = new grpc.Metadata();
+    adminMetadata.set("x-api-key", "test-admin-key");
+
+    const snapshot = await invokeUnary(__testables.adminService.GetSystemSnapshot, {}, adminMetadata);
     expect(snapshot.response).toMatchObject({
       inventory: expect.objectContaining({ skuCount: 3 }),
       orders: expect.objectContaining({ orderCount: 1 })
@@ -445,10 +536,18 @@ describe("gRPC server handlers", () => {
     const resetInjected = await invokeUnary(__testables.adminService.ResetAllState, {}, failureMetadata);
     expect(resetInjected.error?.code).toBe(grpc.status.DEADLINE_EXCEEDED);
 
-    const reset = await invokeUnary(__testables.adminService.ResetAllState, {});
+    const reset = await invokeUnary(__testables.adminService.ResetAllState, {}, adminMetadata);
     expect(reset.response).toMatchObject({
       clearedOrders: 1,
       remainingInventoryReservations: 0
     });
+
+    const missingAuth = await invokeUnary(__testables.adminService.GetSystemSnapshot, {});
+    expect(missingAuth.error?.code).toBe(grpc.status.UNAUTHENTICATED);
+
+    const userMetadata = new grpc.Metadata();
+    userMetadata.set("x-api-key", "test-user-key");
+    const denied = await invokeUnary(__testables.adminService.GetSystemSnapshot, {}, userMetadata);
+    expect(denied.error?.code).toBe(grpc.status.PERMISSION_DENIED);
   });
 });
