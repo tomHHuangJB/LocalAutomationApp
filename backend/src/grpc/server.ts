@@ -3,9 +3,16 @@ import protoLoader from "@grpc/proto-loader";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { InventoryStore, type FailureMode } from "./inventoryStore.js";
+import {
+  PricingStore,
+  pricingValidationError,
+  toMoney,
+  type ComputedQuote
+} from "./pricingStore.js";
 
 const inventoryProtoPath = fileURLToPath(new URL("../../proto/inventory.proto", import.meta.url));
-const packageDefinition = protoLoader.loadSync(inventoryProtoPath, {
+const pricingProtoPath = fileURLToPath(new URL("../../proto/pricing.proto", import.meta.url));
+const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath], {
   longs: String,
   enums: String,
   defaults: true,
@@ -13,8 +20,10 @@ const packageDefinition = protoLoader.loadSync(inventoryProtoPath, {
 });
 const loaded = grpc.loadPackageDefinition(packageDefinition) as any;
 const inventoryPackage = loaded.automation.inventory.v1;
+const pricingPackage = loaded.automation.pricing.v1;
 
 const store = new InventoryStore();
+const pricingStore = new PricingStore();
 
 function correlationIdFromMetadata(metadata: grpc.Metadata): string {
   const header = metadata.get("x-correlation-id")[0];
@@ -177,6 +186,125 @@ const inventoryService = {
   }
 };
 
+function quoteResponse(quote: ComputedQuote, correlationId: string) {
+  return {
+    quote: {
+      quoteId: quote.quoteId,
+      sku: quote.sku,
+      quantity: quote.quantity,
+      unitPrice: toMoney(quote.currency, quote.unitPriceCents),
+      totalPrice: toMoney(quote.currency, quote.totalPriceCents),
+      pricingRule: quote.pricingRule
+    },
+    correlationId
+  };
+}
+
+const pricingService = {
+  async GetQuote(
+    call: grpc.ServerUnaryCall<
+      {
+        sku?: string;
+        quantity?: number;
+        currency?: string;
+        priceShiftBasisPoints?: number;
+        delayMs?: number;
+      },
+      unknown
+    >,
+    callback: grpc.sendUnaryData<unknown>
+  ): Promise<void> {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    try {
+      const quote = await pricingStore.getQuote({
+        sku: String(call.request?.sku ?? ""),
+        quantity: Number(call.request?.quantity ?? 0),
+        currency: String(call.request?.currency ?? "USD"),
+        shiftBasisPoints: Number(call.request?.priceShiftBasisPoints ?? 0),
+        delayMs: Number(call.request?.delayMs ?? 0)
+      });
+      callback(null, quoteResponse(quote, correlationIdFromMetadata(call.metadata)));
+    } catch (error) {
+      const serviceError = pricingValidationError(error as Error);
+      callback(serviceError, null);
+    }
+  },
+
+  async StreamQuotes(
+    call: grpc.ServerWritableStream<
+      {
+        sku?: string;
+        quantity?: number;
+        currency?: string;
+        updatesCount?: number;
+        intervalMs?: number;
+        initialShiftBasisPoints?: number;
+        stepBasisPoints?: number;
+        failAfterItem?: number;
+      },
+      unknown
+    >
+  ): Promise<void> {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      call.destroy(injected);
+      return;
+    }
+
+    const correlationId = correlationIdFromMetadata(call.metadata);
+
+    try {
+      const stream = pricingStore.streamQuotes({
+        sku: String(call.request?.sku ?? ""),
+        quantity: Number(call.request?.quantity ?? 0),
+        currency: String(call.request?.currency ?? "USD"),
+        updatesCount: Number(call.request?.updatesCount ?? 0),
+        intervalMs: Number(call.request?.intervalMs ?? 0),
+        initialShiftBasisPoints: Number(call.request?.initialShiftBasisPoints ?? 0),
+        stepBasisPoints: Number(call.request?.stepBasisPoints ?? 0)
+      });
+
+      const failAfterItem = Number(call.request?.failAfterItem ?? 0);
+      let sequenceNumber = 0;
+
+      for await (const quote of stream) {
+        sequenceNumber += 1;
+
+        if (failAfterItem > 0 && sequenceNumber > failAfterItem) {
+          call.destroy({
+            name: "PricingStreamFailure",
+            message: `Injected stream failure after item ${failAfterItem}`,
+            code: grpc.status.UNAVAILABLE
+          } as grpc.ServiceError);
+          return;
+        }
+
+        call.write({
+          ...quoteResponse(quote, correlationId),
+          sequenceNumber,
+          final: sequenceNumber === Number(call.request?.updatesCount ?? 0)
+        });
+      }
+
+      call.end();
+    } catch (error) {
+      const serviceError = pricingValidationError(error as Error);
+      call.destroy(serviceError);
+    }
+  }
+};
+
+export const __testables = {
+  inventoryService,
+  pricingService,
+  quoteResponse
+};
+
 export type StartedGrpcServer = {
   port: number;
   shutdown: () => Promise<void>;
@@ -185,21 +313,22 @@ export type StartedGrpcServer = {
 export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 50051)): Promise<StartedGrpcServer> {
   const server = new grpc.Server();
   server.addService(inventoryPackage.InventoryService.service, inventoryService);
+  server.addService(pricingPackage.PricingService.service, pricingService);
 
-  await new Promise<void>((resolve, reject) => {
-    server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error) => {
+  const boundPort = await new Promise<number>((resolve, reject) => {
+    server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
       if (error) {
         reject(error);
         return;
       }
-      resolve();
+      resolve(actualPort);
     });
   });
 
-  console.log(`gRPC inventory server running on ${port}`);
+  console.log(`gRPC inventory and pricing server running on ${boundPort}`);
 
   return {
-    port,
+    port: boundPort,
     shutdown: () =>
       new Promise<void>((resolve, reject) => {
         server.tryShutdown((error) => {

@@ -1,6 +1,6 @@
-# gRPC Phase 1 Testing Guide
+# gRPC Phase 1 and 2 Testing Guide
 
-Phase 1 adds a real gRPC `InventoryService` to the backend on port `50051`.
+Phase 1 and 2 add real gRPC services to the backend on port `50051`.
 
 ## What was added
 
@@ -8,6 +8,8 @@ Phase 1 adds a real gRPC `InventoryService` to the backend on port `50051`.
 - `ReserveStock`
 - `ReleaseStock`
 - `ResetInventory`
+- `GetQuote`
+- `StreamQuotes`
 
 Manual testing concepts now available:
 
@@ -17,6 +19,9 @@ Manual testing concepts now available:
 - metadata testing with correlation IDs
 - deterministic fault injection with gRPC status codes
 - stateful reserve/release workflow testing
+- unary pricing validation and business-rule testing
+- server-streaming practice with partial stream failure
+- deadline and interval tuning practice for streaming RPCs
 
 ## Start the backend
 
@@ -31,7 +36,7 @@ Expected startup lines:
 
 ```text
 API server running on 3001
-gRPC inventory server running on 50051
+gRPC inventory and pricing server running on 50051
 ```
 
 ## Example grpcurl commands
@@ -131,3 +136,102 @@ grpcurl -plaintext \
 - frontend UI integration for gRPC-backed flows
 
 Those will be added in later phases.
+
+## Phase 2 pricing examples
+
+### 6. Get a unary price quote
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -d '{"sku":"SKU-BLUE-DESK","quantity":3,"currency":"USD"}' \
+  localhost:50051 automation.pricing.v1.PricingService/GetQuote
+```
+
+Expected:
+
+- `quote.sku` is `SKU-BLUE-DESK`
+- `quote.quantity` is `3`
+- `quote.pricingRule` is `standard-price`
+
+### 7. Get a discounted price quote
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -d '{"sku":"SKU-BLUE-DESK","quantity":5,"currency":"USD"}' \
+  localhost:50051 automation.pricing.v1.PricingService/GetQuote
+```
+
+Expected:
+
+- `quote.pricingRule` is `bulk-5-discount`
+- total price reflects the bulk discount
+
+### 8. Stream quote updates
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -d '{"sku":"SKU-RED-CHAIR","quantity":2,"currency":"USD","updatesCount":3,"intervalMs":200,"initialShiftBasisPoints":0,"stepBasisPoints":50}' \
+  localhost:50051 automation.pricing.v1.PricingService/StreamQuotes
+```
+
+Expected:
+
+- three streamed responses
+- `sequenceNumber` increases from `1` to `3`
+- the last item has `final: true`
+- unit price changes as the market shift increases
+
+### 9. Trigger partial stream failure
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -d '{"sku":"SKU-RED-CHAIR","quantity":2,"currency":"USD","updatesCount":4,"intervalMs":100,"failAfterItem":2}' \
+  localhost:50051 automation.pricing.v1.PricingService/StreamQuotes
+```
+
+Expected:
+
+- two items stream successfully
+- the stream then ends with `UNAVAILABLE`
+
+### 10. Trigger deterministic unary failure through metadata
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -H 'x-failure-mode: deadline_exceeded' \
+  -d '{"sku":"SKU-RED-CHAIR","quantity":1,"currency":"USD"}' \
+  localhost:50051 automation.pricing.v1.PricingService/GetQuote
+```
+
+Expected:
+
+- gRPC error with status `DEADLINE_EXCEEDED`
+
+### 11. Trigger validation failures
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -d '{"sku":"","quantity":0,"currency":"USD"}' \
+  localhost:50051 automation.pricing.v1.PricingService/GetQuote
+```
+
+Expected:
+
+- gRPC error with status `INVALID_ARGUMENT`
+
+```bash
+grpcurl -plaintext \
+  -proto proto/pricing.proto \
+  -d '{"sku":"SKU-UNKNOWN","quantity":1,"currency":"USD"}' \
+  localhost:50051 automation.pricing.v1.PricingService/GetQuote
+```
+
+Expected:
+
+- gRPC error with status `NOT_FOUND`
