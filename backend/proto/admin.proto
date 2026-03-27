@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package automation.admin.v1;
+
+service AdminService {
+  rpc GetSystemSnapshot(GetSystemSnapshotRequest) returns (GetSystemSnapshotResponse);
+  rpc ResetAllState(ResetAllStateRequest) returns (ResetAllStateResponse);
+}
+
+message GetSystemSnapshotRequest {}
+
+message GetSystemSnapshotResponse {
+  InventorySnapshot inventory = 1;
+  OrderSnapshot orders = 2;
+  AuditSnapshot audit = 3;
+  NotificationSnapshot notifications = 4;
+  string correlationId = 5;
+}
+
+message InventorySnapshot {
+  int32 skuCount = 1;
+  int32 activeReservationCount = 2;
+}
+
+message OrderSnapshot {
+  int32 orderCount = 1;
+}
+
+message AuditSnapshot {
+  int32 eventCount = 1;
+}
+
+message NotificationSnapshot {
+  int32 notificationCount = 1;
+  int32 activeChannelSubscriberCount = 2;
+}
+
+message ResetAllStateRequest {}
+
+message ResetAllStateResponse {
+  int32 clearedOrders = 1;
+  int32 clearedAuditEvents = 2;
+  int32 clearedNotifications = 3;
+  int32 remainingInventoryReservations = 4;
+  repeated InventoryItem inventory = 5;
+  string correlationId = 6;
+}
+
+message InventoryItem {
+  string sku = 1;
+  int32 available = 2;
+}

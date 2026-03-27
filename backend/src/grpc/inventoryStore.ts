@@ -29,6 +29,10 @@ export class InventoryStore {
     return Array.from(this.stock.entries()).map(([sku, available]) => ({ sku, available }));
   }
 
+  reservationCount(): number {
+    return this.reservations.size;
+  }
+
   getStock(sku: string): { sku: string; available: number } {
     const available = this.stock.get(sku);
     if (available === undefined) {
