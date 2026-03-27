@@ -57,6 +57,12 @@ const knownHealthServices = new Set([
   "automation.admin.v1.AdminService"
 ]);
 
+const apiKeyRoles = new Map<string, "admin" | "user" | "service">([
+  ["test-admin-key", "admin"],
+  ["test-user-key", "user"],
+  ["test-service-key", "service"]
+]);
+
 function correlationIdFromMetadata(metadata: grpc.Metadata): string {
   const header = metadata.get("x-correlation-id")[0];
   return typeof header === "string" && header.length > 0 ? header : randomUUID();
@@ -93,6 +99,37 @@ function maybeFail(metadata: grpc.Metadata): grpc.ServiceError | undefined {
     message: `Injected failure mode: ${mode}`,
     code: codeByMode[mode]
   } as grpc.ServiceError;
+}
+
+function authError(message: string, code: grpc.status): grpc.ServiceError {
+  return {
+    name: "GrpcAuthError",
+    message,
+    code
+  } as grpc.ServiceError;
+}
+
+function requireAuth(metadata: grpc.Metadata, allowedRoles?: Array<"admin" | "user" | "service">): grpc.ServiceError | undefined {
+  const apiKey = metadata.get("x-api-key")[0];
+  if (typeof apiKey !== "string" || apiKey.length === 0) {
+    return authError("x-api-key is required", grpc.status.UNAUTHENTICATED);
+  }
+
+  const role = apiKeyRoles.get(apiKey);
+  if (!role) {
+    return authError("invalid x-api-key", grpc.status.UNAUTHENTICATED);
+  }
+
+  const requestedRole = metadata.get("x-user-role")[0];
+  if (typeof requestedRole === "string" && requestedRole.length > 0 && requestedRole !== role) {
+    return authError("x-user-role does not match the authenticated principal", grpc.status.PERMISSION_DENIED);
+  }
+
+  if (allowedRoles && !allowedRoles.includes(role)) {
+    return authError(`role ${role} is not allowed`, grpc.status.PERMISSION_DENIED);
+  }
+
+  return undefined;
 }
 
 function validationError(message: string, code: grpc.status): grpc.ServiceError {
@@ -217,6 +254,12 @@ const inventoryService = {
     call: grpc.ServerUnaryCall<{ sku?: string; quantity?: number; reservationId?: string }, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -256,6 +299,12 @@ const inventoryService = {
     call: grpc.ServerUnaryCall<{ reservationId?: string }, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -286,6 +335,12 @@ const inventoryService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -391,6 +446,12 @@ const pricingService = {
       unknown
     >
   ): Promise<void> {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      call.destroy(authFailure);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       call.destroy(injected);
@@ -454,6 +515,12 @@ const orderService = {
     >,
     callback: grpc.sendUnaryData<unknown>
   ): Promise<void> {
+    const authFailure = requireAuth(call.metadata, ["user", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -536,6 +603,12 @@ const orderService = {
     call: grpc.ServerUnaryCall<{ orderId?: string }, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -560,6 +633,12 @@ const orderService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -576,6 +655,12 @@ const orderService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -603,6 +688,12 @@ const auditService = {
     >,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -673,6 +764,12 @@ const auditService = {
     call: grpc.ServerUnaryCall<{ eventType?: string }, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -690,6 +787,12 @@ const auditService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -747,6 +850,12 @@ const notificationService = {
       unknown
     >
   ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      call.destroy(authFailure);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       call.destroy(injected);
@@ -860,6 +969,12 @@ const notificationService = {
     call: grpc.ServerUnaryCall<{ channel?: string }, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -883,6 +998,12 @@ const notificationService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -901,6 +1022,12 @@ const adminService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
@@ -933,6 +1060,12 @@ const adminService = {
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
     callback: grpc.sendUnaryData<unknown>
   ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
     const injected = maybeFail(call.metadata);
     if (injected) {
       callback(injected, null);
