@@ -265,4 +265,53 @@ describe("gRPC server handlers", () => {
     const reset = await invokeUnary(__testables.orderService.ResetOrders, {});
     expect((reset.response as { cleared: number }).cleared).toBeGreaterThan(0);
   });
+
+  it("covers health handlers and response shaping", async () => {
+    expect(__testables.healthResponse("automation.inventory.v1.InventoryService")).toEqual({ status: "SERVING" });
+    expect(__testables.healthResponse("automation.unknown.v1.MissingService")).toEqual({ status: "SERVICE_UNKNOWN" });
+
+    const failureMetadata = new grpc.Metadata();
+    failureMetadata.set("x-failure-mode", "unavailable");
+
+    const checkInjected = await invokeUnary(
+      __testables.healthService.Check,
+      { service: "automation.inventory.v1.InventoryService" },
+      failureMetadata
+    );
+    expect(checkInjected.error?.code).toBe(grpc.status.UNAVAILABLE);
+
+    const checkUnknown = await invokeUnary(__testables.healthService.Check, {
+      service: "automation.unknown.v1.MissingService"
+    });
+    expect(checkUnknown.error?.code).toBe(grpc.status.NOT_FOUND);
+
+    const checkKnown = await invokeUnary(__testables.healthService.Check, {
+      service: "grpc.health.v1.Health"
+    });
+    expect(checkKnown.response).toEqual({ status: "SERVING" });
+
+    const watchInjectedErrors: Array<grpc.ServiceError> = [];
+    await __testables.healthService.Watch({
+      request: { service: "grpc.health.v1.Health" },
+      metadata: failureMetadata,
+      destroy: (error: grpc.ServiceError) => watchInjectedErrors.push(error),
+      write: () => undefined,
+      end: () => undefined
+    });
+    expect(watchInjectedErrors[0]?.code).toBe(grpc.status.UNAVAILABLE);
+
+    const watchWrites: Array<unknown> = [];
+    let ended = 0;
+    await __testables.healthService.Watch({
+      request: { service: "automation.unknown.v1.MissingService" },
+      metadata: new grpc.Metadata(),
+      destroy: () => undefined,
+      write: (item: unknown) => watchWrites.push(item),
+      end: () => {
+        ended += 1;
+      }
+    });
+    expect(watchWrites).toEqual([{ status: "SERVICE_UNKNOWN" }]);
+    expect(ended).toBe(1);
+  });
 });

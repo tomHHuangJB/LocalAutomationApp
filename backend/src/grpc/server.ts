@@ -16,22 +16,36 @@ const inventoryProtoPath = fileURLToPath(new URL("../../proto/inventory.proto", 
 const pricingProtoPath = fileURLToPath(new URL("../../proto/pricing.proto", import.meta.url));
 const orderProtoPath = fileURLToPath(new URL("../../proto/order.proto", import.meta.url));
 const auditProtoPath = fileURLToPath(new URL("../../proto/audit.proto", import.meta.url));
-const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath], {
+const healthProtoPath = fileURLToPath(new URL("../../proto/health.proto", import.meta.url));
+const packageDefinition = protoLoader.loadSync(
+  [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath],
+  {
   longs: String,
   enums: String,
   defaults: true,
   oneofs: true
-});
+}
+);
 const loaded = grpc.loadPackageDefinition(packageDefinition) as any;
 const inventoryPackage = loaded.automation.inventory.v1;
 const pricingPackage = loaded.automation.pricing.v1;
 const orderPackage = loaded.automation.order.v1;
 const auditPackage = loaded.automation.audit.v1;
+const healthPackage = loaded.grpc.health.v1;
 
 const auditStore = new AuditStore();
 const store = new InventoryStore();
 const pricingStore = new PricingStore();
 const orderStore = new OrderStore();
+
+const knownHealthServices = new Set([
+  "",
+  "automation.inventory.v1.InventoryService",
+  "automation.pricing.v1.PricingService",
+  "automation.order.v1.OrderService",
+  "automation.audit.v1.AuditService",
+  "grpc.health.v1.Health"
+]);
 
 function correlationIdFromMetadata(metadata: grpc.Metadata): string {
   const header = metadata.get("x-correlation-id")[0];
@@ -98,6 +112,22 @@ function auditValidationError(message: string, code: grpc.status): grpc.ServiceE
     message,
     code
   } as grpc.ServiceError;
+}
+
+function healthStatusForService(serviceName: string): grpc.status | undefined {
+  return knownHealthServices.has(serviceName) ? undefined : grpc.status.NOT_FOUND;
+}
+
+function healthResponse(serviceName: string) {
+  if (!knownHealthServices.has(serviceName)) {
+    return {
+      status: "SERVICE_UNKNOWN"
+    };
+  }
+
+  return {
+    status: "SERVING"
+  };
 }
 
 const inventoryService = {
@@ -618,14 +648,50 @@ const auditService = {
   }
 };
 
+const healthService = {
+  Check(
+    call: grpc.ServerUnaryCall<{ service?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const serviceName = String(call.request?.service ?? "");
+    const healthErrorCode = healthStatusForService(serviceName);
+    if (healthErrorCode) {
+      callback(validationError(`unknown service: ${serviceName}`, healthErrorCode), null);
+      return;
+    }
+
+    callback(null, healthResponse(serviceName));
+  },
+
+  Watch(call: grpc.ServerWritableStream<{ service?: string }, unknown>): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      call.destroy(injected);
+      return;
+    }
+
+    const serviceName = String(call.request?.service ?? "");
+    call.write(healthResponse(serviceName));
+    call.end();
+  }
+};
+
 export const __testables = {
   inventoryService,
   pricingService,
   orderService,
   auditService,
+  healthService,
   quoteResponse,
   orderResponse,
-  auditEventResponse
+  auditEventResponse,
+  healthResponse
 };
 
 export type StartedGrpcServer = {
@@ -639,6 +705,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   server.addService(pricingPackage.PricingService.service, pricingService);
   server.addService(orderPackage.OrderService.service, orderService);
   server.addService(auditPackage.AuditService.service, auditService);
+  server.addService(healthPackage.Health.service, healthService);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
     server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
@@ -650,7 +717,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
     });
   });
 
-  console.log(`gRPC inventory, pricing, order, and audit server running on ${boundPort}`);
+  console.log(`gRPC inventory, pricing, order, audit, and health server running on ${boundPort}`);
 
   return {
     port: boundPort,
