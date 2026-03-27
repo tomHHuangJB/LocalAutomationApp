@@ -1,4 +1,4 @@
-# gRPC Phase 1, 2, and 3 Testing Guide
+# gRPC Phase 1, 2, 3, and 4 Testing Guide
 
 Phase 1 and 2 add real gRPC services to the backend on port `50051`.
 
@@ -14,6 +14,9 @@ Phase 1 and 2 add real gRPC services to the backend on port `50051`.
 - `GetOrder`
 - `ListOrders`
 - `ResetOrders`
+- `IngestAuditEvents`
+- `ListAuditEvents`
+- `ResetAuditEvents`
 
 Manual testing concepts now available:
 
@@ -29,6 +32,9 @@ Manual testing concepts now available:
 - multi-service orchestration and compensation logic
 - idempotent order creation
 - consistency checks after rollback
+- client-streaming ingestion
+- stream completion acknowledgement
+- audit/event query and reset practice
 
 ## Start the backend
 
@@ -227,6 +233,59 @@ grpcurl -plaintext \
   -proto proto/order.proto \
   -d '{}' \
   localhost:50051 automation.order.v1.OrderService/ResetOrders
+```
+
+## Phase 4 audit streaming examples
+
+### 19. Ingest audit events with client streaming
+
+Create a JSON lines file such as `audit-events.jsonl`:
+
+```json
+{"eventId":"evt-1","eventType":"order_created","entityId":"order-100","payload":"ok","eventTimeEpochMs":1710000000000}
+{"eventId":"evt-2","eventType":"order_failed","entityId":"order-fail-pricing","payload":"rollback","eventTimeEpochMs":1710000001000}
+```
+
+Then run:
+
+```bash
+grpcurl -plaintext \
+  -proto proto/audit.proto \
+  -d @ \
+  localhost:50051 automation.audit.v1.AuditService/IngestAuditEvents < audit-events.jsonl
+```
+
+Expected:
+
+- one final unary response
+- `acceptedCount` matches the number of streamed events
+- `batchId` is populated
+
+### 20. List all audit events
+
+```bash
+grpcurl -plaintext \
+  -proto proto/audit.proto \
+  -d '{}' \
+  localhost:50051 automation.audit.v1.AuditService/ListAuditEvents
+```
+
+### 21. Filter audit events by type
+
+```bash
+grpcurl -plaintext \
+  -proto proto/audit.proto \
+  -d '{"eventType":"order_created"}' \
+  localhost:50051 automation.audit.v1.AuditService/ListAuditEvents
+```
+
+### 22. Reset audit events
+
+```bash
+grpcurl -plaintext \
+  -proto proto/audit.proto \
+  -d '{}' \
+  localhost:50051 automation.audit.v1.AuditService/ResetAuditEvents
 ```
 
 ## Phase 2 pricing examples
