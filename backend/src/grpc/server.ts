@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { AuditStore, type StoredAuditEvent } from "./auditStore.js";
 import { InventoryStore, type FailureMode } from "./inventoryStore.js";
+import { NotificationStore, type StoredNotification } from "./notificationStore.js";
 import { OrderStore, type StoredOrder } from "./orderStore.js";
 import {
   PricingStore,
@@ -17,14 +18,15 @@ const pricingProtoPath = fileURLToPath(new URL("../../proto/pricing.proto", impo
 const orderProtoPath = fileURLToPath(new URL("../../proto/order.proto", import.meta.url));
 const auditProtoPath = fileURLToPath(new URL("../../proto/audit.proto", import.meta.url));
 const healthProtoPath = fileURLToPath(new URL("../../proto/health.proto", import.meta.url));
+const notificationProtoPath = fileURLToPath(new URL("../../proto/notification.proto", import.meta.url));
 const packageDefinition = protoLoader.loadSync(
-  [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath],
+  [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath],
   {
-  longs: String,
-  enums: String,
-  defaults: true,
-  oneofs: true
-}
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true
+  }
 );
 const loaded = grpc.loadPackageDefinition(packageDefinition) as any;
 const inventoryPackage = loaded.automation.inventory.v1;
@@ -32,11 +34,14 @@ const pricingPackage = loaded.automation.pricing.v1;
 const orderPackage = loaded.automation.order.v1;
 const auditPackage = loaded.automation.audit.v1;
 const healthPackage = loaded.grpc.health.v1;
+const notificationPackage = loaded.automation.notification.v1;
 
 const auditStore = new AuditStore();
 const store = new InventoryStore();
 const pricingStore = new PricingStore();
 const orderStore = new OrderStore();
+const notificationStore = new NotificationStore();
+const notificationSubscribers = new Map<string, Set<grpc.ServerDuplexStream<unknown, unknown>>>();
 
 const knownHealthServices = new Set([
   "",
@@ -44,7 +49,8 @@ const knownHealthServices = new Set([
   "automation.pricing.v1.PricingService",
   "automation.order.v1.OrderService",
   "automation.audit.v1.AuditService",
-  "grpc.health.v1.Health"
+  "grpc.health.v1.Health",
+  "automation.notification.v1.NotificationService"
 ]);
 
 function correlationIdFromMetadata(metadata: grpc.Metadata): string {
@@ -128,6 +134,51 @@ function healthResponse(serviceName: string) {
   return {
     status: "SERVING"
   };
+}
+
+function notificationValidationError(message: string, code: grpc.status): grpc.ServiceError {
+  return {
+    name: "NotificationValidationError",
+    message,
+    code
+  } as grpc.ServiceError;
+}
+
+function notificationRecordResponse(notification: StoredNotification, correlationId: string, replay = false) {
+  return {
+    broadcast: {
+      messageId: notification.messageId,
+      channel: notification.channel,
+      body: notification.body,
+      senderId: notification.senderId,
+      sequenceNumber: notification.sequenceNumber,
+      replay,
+      correlationId
+    }
+  };
+}
+
+function addSubscriber(channel: string, call: grpc.ServerDuplexStream<unknown, unknown>): void {
+  const subscribers = notificationSubscribers.get(channel) ?? new Set();
+  subscribers.add(call);
+  notificationSubscribers.set(channel, subscribers);
+}
+
+function removeSubscriber(channel: string, call: grpc.ServerDuplexStream<unknown, unknown>): void {
+  const subscribers = notificationSubscribers.get(channel);
+  if (!subscribers) {
+    return;
+  }
+  subscribers.delete(call);
+  if (subscribers.size === 0) {
+    notificationSubscribers.delete(channel);
+  }
+}
+
+function broadcastNotification(channel: string, event: unknown): void {
+  for (const subscriber of notificationSubscribers.get(channel) ?? []) {
+    subscriber.write(event);
+  }
 }
 
 const inventoryService = {
@@ -682,16 +733,177 @@ const healthService = {
   }
 };
 
+const notificationService = {
+  Connect(
+    call: grpc.ServerDuplexStream<
+      {
+        subscribe?: { clientId?: string; channel?: string; replayRecent?: number };
+        publish?: { messageId?: string; channel?: string; body?: string; senderId?: string; failAfterAckCount?: number };
+      },
+      unknown
+    >
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      call.destroy(injected);
+      return;
+    }
+
+    const correlationId = correlationIdFromMetadata(call.metadata);
+    const subscribedChannels = new Set<string>();
+    let ackCount = 0;
+
+    call.on("data", (request) => {
+      const subscribe = request.subscribe;
+      const publish = request.publish;
+
+      if (subscribe) {
+        const clientId = String(subscribe.clientId ?? "").trim();
+        const channel = String(subscribe.channel ?? "").trim();
+        const replayRecent = Number(subscribe.replayRecent ?? 0);
+
+        if (!clientId) {
+          call.destroy(notificationValidationError("clientId is required", grpc.status.INVALID_ARGUMENT));
+          return;
+        }
+        if (!channel) {
+          call.destroy(notificationValidationError("channel is required", grpc.status.INVALID_ARGUMENT));
+          return;
+        }
+
+        if (!subscribedChannels.has(channel)) {
+          subscribedChannels.add(channel);
+          addSubscriber(channel, call as grpc.ServerDuplexStream<unknown, unknown>);
+        }
+
+        call.write({
+          connected: {
+            clientId,
+            channel,
+            correlationId
+          }
+        });
+
+        for (const replayed of notificationStore.replay(channel, replayRecent)) {
+          call.write(notificationRecordResponse(replayed, correlationId, true));
+        }
+        return;
+      }
+
+      if (publish) {
+        const channel = String(publish.channel ?? "").trim();
+        const body = String(publish.body ?? "");
+        const senderId = String(publish.senderId ?? "").trim();
+        const messageId = String(publish.messageId ?? "").trim() || randomUUID();
+        const failAfterAckCount = Number(publish.failAfterAckCount ?? 0);
+
+        if (!channel) {
+          call.destroy(notificationValidationError("channel is required", grpc.status.INVALID_ARGUMENT));
+          return;
+        }
+        if (!body) {
+          call.destroy(notificationValidationError("body is required", grpc.status.INVALID_ARGUMENT));
+          return;
+        }
+        if (!senderId) {
+          call.destroy(notificationValidationError("senderId is required", grpc.status.INVALID_ARGUMENT));
+          return;
+        }
+
+        const stored = notificationStore.publish({
+          messageId,
+          channel,
+          body,
+          senderId
+        });
+
+        ackCount += 1;
+        call.write({
+          ack: {
+            messageId: stored.messageId,
+            channel: stored.channel,
+            sequenceNumber: stored.sequenceNumber,
+            correlationId
+          }
+        });
+
+        broadcastNotification(channel, notificationRecordResponse(stored, correlationId));
+
+        if (failAfterAckCount > 0 && ackCount >= failAfterAckCount) {
+          call.destroy(notificationValidationError(`Injected notification failure after ack ${ackCount}`, grpc.status.UNAVAILABLE));
+        }
+        return;
+      }
+
+      call.destroy(notificationValidationError("notification request payload is required", grpc.status.INVALID_ARGUMENT));
+    });
+
+    call.on("end", () => {
+      for (const channel of subscribedChannels) {
+        removeSubscriber(channel, call as grpc.ServerDuplexStream<unknown, unknown>);
+      }
+      call.end();
+    });
+
+    call.on("error", () => {
+      for (const channel of subscribedChannels) {
+        removeSubscriber(channel, call as grpc.ServerDuplexStream<unknown, unknown>);
+      }
+    });
+  },
+
+  ListNotifications(
+    call: grpc.ServerUnaryCall<{ channel?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const channel = String(call.request?.channel ?? "").trim();
+    callback(null, {
+      notifications: notificationStore.list(channel || undefined).map((notification) => ({
+        messageId: notification.messageId,
+        channel: notification.channel,
+        body: notification.body,
+        senderId: notification.senderId,
+        sequenceNumber: notification.sequenceNumber
+      })),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  },
+
+  ResetNotifications(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      cleared: notificationStore.reset(),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  }
+};
+
 export const __testables = {
   inventoryService,
   pricingService,
   orderService,
   auditService,
   healthService,
+  notificationService,
   quoteResponse,
   orderResponse,
   auditEventResponse,
-  healthResponse
+  healthResponse,
+  notificationRecordResponse
 };
 
 export type StartedGrpcServer = {
@@ -706,6 +918,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   server.addService(orderPackage.OrderService.service, orderService);
   server.addService(auditPackage.AuditService.service, auditService);
   server.addService(healthPackage.Health.service, healthService);
+  server.addService(notificationPackage.NotificationService.service, notificationService);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
     server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (error, actualPort) => {
@@ -717,7 +930,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
     });
   });
 
-  console.log(`gRPC inventory, pricing, order, audit, and health server running on ${boundPort}`);
+  console.log(`gRPC inventory, pricing, order, audit, health, and notification server running on ${boundPort}`);
 
   return {
     port: boundPort,

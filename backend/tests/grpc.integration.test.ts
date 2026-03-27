@@ -15,13 +15,17 @@ type GrpcClient = grpc.Client & {
   StreamQuotes: Function;
   Check: Function;
   Watch: Function;
+  Connect: Function;
+  ListNotifications: Function;
+  ResetNotifications: Function;
 };
 
 function loadClient(port: number): GrpcClient {
   const inventoryProtoPath = fileURLToPath(new URL("../proto/inventory.proto", import.meta.url));
   const pricingProtoPath = fileURLToPath(new URL("../proto/pricing.proto", import.meta.url));
   const healthProtoPath = fileURLToPath(new URL("../proto/health.proto", import.meta.url));
-  const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, healthProtoPath], {
+  const notificationProtoPath = fileURLToPath(new URL("../proto/notification.proto", import.meta.url));
+  const packageDefinition = protoLoader.loadSync([inventoryProtoPath, pricingProtoPath, healthProtoPath, notificationProtoPath], {
     longs: String,
     enums: String,
     defaults: true,
@@ -37,19 +41,28 @@ function loadClient(port: number): GrpcClient {
     grpc.credentials.createInsecure()
   ) as GrpcClient;
   const healthClient = new loaded.grpc.health.v1.Health(`localhost:${port}`, grpc.credentials.createInsecure()) as GrpcClient;
+  const notificationClient = new loaded.automation.notification.v1.NotificationService(
+    `localhost:${port}`,
+    grpc.credentials.createInsecure()
+  ) as GrpcClient;
   const inventoryClose = inventoryClient.close.bind(inventoryClient);
   const pricingClose = pricingClient.close.bind(pricingClient);
   const healthClose = healthClient.close.bind(healthClient);
+  const notificationClose = notificationClient.close.bind(notificationClient);
 
   return Object.assign(inventoryClient, {
     GetQuote: pricingClient.GetQuote.bind(pricingClient),
     StreamQuotes: pricingClient.StreamQuotes.bind(pricingClient),
     Check: healthClient.Check.bind(healthClient),
     Watch: healthClient.Watch.bind(healthClient),
+    Connect: notificationClient.Connect.bind(notificationClient),
+    ListNotifications: notificationClient.ListNotifications.bind(notificationClient),
+    ResetNotifications: notificationClient.ResetNotifications.bind(notificationClient),
     close: () => {
       inventoryClose();
       pricingClose();
       healthClose();
+      notificationClose();
     }
   });
 }
@@ -199,6 +212,78 @@ describe("gRPC integration", () => {
       stream.on("error", reject);
     });
     expect(watchedStatuses).toEqual(["SERVING"]);
+  });
+
+  it("supports notification bidirectional streaming, replay, and state inspection", async () => {
+    await unary<{ cleared: number }>(client.ResetNotifications.bind(client), {});
+
+    const subscriber = client.Connect();
+    const subscriberEvents: Array<{ connected?: { channel: string }; broadcast?: { messageId: string; replay?: boolean } }> = [];
+    subscriber.on("data", (message: { connected?: { channel: string }; broadcast?: { messageId: string; replay?: boolean } }) => {
+      subscriberEvents.push(message);
+    });
+
+    subscriber.write({
+      subscribe: {
+        clientId: "sub-1",
+        channel: "ops",
+        replayRecent: 0
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(subscriberEvents).toContainEqual(expect.objectContaining({ connected: expect.objectContaining({ channel: "ops" }) }));
+
+    const publisher = client.Connect();
+    const publisherEvents: Array<{ ack?: { messageId: string; sequenceNumber: number } }> = [];
+    publisher.on("data", (message: { ack?: { messageId: string; sequenceNumber: number } }) => {
+      publisherEvents.push(message);
+    });
+
+    publisher.write({
+      publish: {
+        messageId: "msg-ci-1",
+        channel: "ops",
+        body: "deployment completed",
+        senderId: "bot-ci"
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(publisherEvents).toContainEqual(
+      expect.objectContaining({ ack: expect.objectContaining({ messageId: "msg-ci-1", sequenceNumber: 1 }) })
+    );
+    expect(subscriberEvents).toContainEqual(
+      expect.objectContaining({ broadcast: expect.objectContaining({ messageId: "msg-ci-1", replay: false }) })
+    );
+
+    const replayClient = client.Connect();
+    const replayEvents: Array<{ broadcast?: { messageId: string; replay?: boolean } }> = [];
+    replayClient.on("data", (message: { broadcast?: { messageId: string; replay?: boolean } }) => {
+      replayEvents.push(message);
+    });
+    replayClient.write({
+      subscribe: {
+        clientId: "sub-2",
+        channel: "ops",
+        replayRecent: 1
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(replayEvents).toContainEqual(
+      expect.objectContaining({ broadcast: expect.objectContaining({ messageId: "msg-ci-1", replay: true }) })
+    );
+
+    const listed = await unary<{ notifications: Array<{ messageId: string; channel: string }> }>(
+      client.ListNotifications.bind(client),
+      { channel: "ops" }
+    );
+    expect(listed.notifications).toEqual([expect.objectContaining({ messageId: "msg-ci-1", channel: "ops" })]);
+
+    subscriber.end();
+    publisher.end();
+    replayClient.end();
   });
 
 });

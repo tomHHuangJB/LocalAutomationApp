@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package automation.notification.v1;
+
+service NotificationService {
+  rpc Connect(stream NotificationRequest) returns (stream NotificationEvent);
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc ResetNotifications(ResetNotificationsRequest) returns (ResetNotificationsResponse);
+}
+
+message SubscribeRequest {
+  string clientId = 1;
+  string channel = 2;
+  int32 replayRecent = 3;
+}
+
+message PublishRequest {
+  string messageId = 1;
+  string channel = 2;
+  string body = 3;
+  string senderId = 4;
+  int32 failAfterAckCount = 5;
+}
+
+message NotificationRequest {
+  oneof payload {
+    SubscribeRequest subscribe = 1;
+    PublishRequest publish = 2;
+  }
+}
+
+message ConnectedEvent {
+  string clientId = 1;
+  string channel = 2;
+  string correlationId = 3;
+}
+
+message AckEvent {
+  string messageId = 1;
+  string channel = 2;
+  int32 sequenceNumber = 3;
+  string correlationId = 4;
+}
+
+message BroadcastEvent {
+  string messageId = 1;
+  string channel = 2;
+  string body = 3;
+  string senderId = 4;
+  int32 sequenceNumber = 5;
+  bool replay = 6;
+  string correlationId = 7;
+}
+
+message NotificationEvent {
+  oneof payload {
+    ConnectedEvent connected = 1;
+    AckEvent ack = 2;
+    BroadcastEvent broadcast = 3;
+  }
+}
+
+message StoredNotification {
+  string messageId = 1;
+  string channel = 2;
+  string body = 3;
+  string senderId = 4;
+  int32 sequenceNumber = 5;
+}
+
+message ListNotificationsRequest {
+  string channel = 1;
+}
+
+message ListNotificationsResponse {
+  repeated StoredNotification notifications = 1;
+  string correlationId = 2;
+}
+
+message ResetNotificationsRequest {}
+
+message ResetNotificationsResponse {
+  int32 cleared = 1;
+  string correlationId = 2;
+}
