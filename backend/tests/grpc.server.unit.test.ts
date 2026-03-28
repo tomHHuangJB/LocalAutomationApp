@@ -550,4 +550,133 @@ describe("gRPC server handlers", () => {
     const denied = await invokeUnary(__testables.adminService.GetSystemSnapshot, {}, userMetadata);
     expect(denied.error?.code).toBe(grpc.status.PERMISSION_DENIED);
   });
+
+  it("covers workflow shaping and workflow handler branches", async () => {
+    const shapedEvent = __testables.workflowEventResponse(
+      {
+        runId: "run-1",
+        orderId: "order-1",
+        sku: "SKU-RED-CHAIR",
+        quantity: 1,
+        currency: "USD",
+        finalStatus: "completed",
+        events: []
+      },
+      {
+        sequenceNumber: 1,
+        step: "accepted",
+        status: "started",
+        detail: "workflow accepted",
+        correlationId: "corr-1"
+      }
+    );
+    expect(shapedEvent).toMatchObject({
+      runId: "run-1",
+      orderId: "order-1",
+      step: "accepted",
+      sequenceNumber: 1
+    });
+
+    const shapedRun = __testables.workflowRunResponse({
+      runId: "run-1",
+      orderId: "order-1",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD",
+      finalStatus: "completed",
+      events: [
+        {
+          sequenceNumber: 1,
+          step: "completed",
+          status: "succeeded",
+          detail: "workflow completed",
+          correlationId: "corr-1"
+        }
+      ]
+    });
+    expect(shapedRun).toMatchObject({
+      runId: "run-1",
+      finalStatus: "completed",
+      events: [expect.objectContaining({ step: "completed" })]
+    });
+
+    const unauthenticatedErrors: Array<grpc.ServiceError> = [];
+    await __testables.workflowService.RunOrderWorkflow({
+      request: { orderId: "wf-no-auth", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD", intervalMs: 0 },
+      metadata: new grpc.Metadata(),
+      destroy: (error: grpc.ServiceError) => unauthenticatedErrors.push(error),
+      write: () => undefined,
+      end: () => undefined
+    });
+    expect(unauthenticatedErrors[0]?.code).toBe(grpc.status.UNAUTHENTICATED);
+
+    const invalidIntervalErrors: Array<grpc.ServiceError> = [];
+    const userMetadata = new grpc.Metadata();
+    userMetadata.set("x-api-key", "test-user-key");
+    await __testables.workflowService.RunOrderWorkflow({
+      request: { orderId: "wf-invalid", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD", intervalMs: 5000 },
+      metadata: userMetadata,
+      destroy: (error: grpc.ServiceError) => invalidIntervalErrors.push(error),
+      write: () => undefined,
+      end: () => undefined
+    });
+    expect(invalidIntervalErrors[0]?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const workflowWrites: Array<any> = [];
+    await __testables.workflowService.RunOrderWorkflow({
+      request: { orderId: "wf-unit-1", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD", intervalMs: 0 },
+      metadata: userMetadata,
+      destroy: () => undefined,
+      write: (payload: unknown) => workflowWrites.push(payload),
+      end: () => undefined
+    });
+    expect(workflowWrites.at(-1)).toMatchObject({
+      step: "completed",
+      status: "succeeded"
+    });
+
+    const replayWrites: Array<any> = [];
+    await __testables.workflowService.RunOrderWorkflow({
+      request: { orderId: "wf-unit-1", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD", intervalMs: 0 },
+      metadata: userMetadata,
+      destroy: () => undefined,
+      write: (payload: unknown) => replayWrites.push(payload),
+      end: () => undefined
+    });
+    expect(replayWrites).toHaveLength(workflowWrites.length);
+
+    const failedMetadata = new grpc.Metadata();
+    failedMetadata.set("x-api-key", "test-user-key");
+    failedMetadata.set("x-workflow-failure-step", "pricing");
+    const failedWrites: Array<any> = [];
+    await __testables.workflowService.RunOrderWorkflow({
+      request: { orderId: "wf-unit-fail", sku: "SKU-BLUE-DESK", quantity: 1, currency: "USD", intervalMs: 0 },
+      metadata: failedMetadata,
+      destroy: () => undefined,
+      write: (payload: unknown) => failedWrites.push(payload),
+      end: () => undefined
+    });
+    expect(failedWrites.at(-1)).toMatchObject({
+      step: "failed",
+      status: "failed",
+      detail: "Injected workflow failure at pricing"
+    });
+
+    const getMissing = await invokeUnary(__testables.workflowService.GetWorkflowRun, { orderId: "" }, userMetadata);
+    expect(getMissing.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const getRun = await invokeUnary(__testables.workflowService.GetWorkflowRun, { orderId: "wf-unit-1" }, userMetadata);
+    expect((getRun.response as { run: { finalStatus: string } }).run.finalStatus).toBe("completed");
+
+    const listRuns = await invokeUnary(__testables.workflowService.ListWorkflowRuns, {}, userMetadata);
+    expect((listRuns.response as { runs: Array<unknown> }).runs.length).toBeGreaterThanOrEqual(2);
+
+    const resetDenied = await invokeUnary(__testables.workflowService.ResetWorkflowRuns, {}, userMetadata);
+    expect(resetDenied.error?.code).toBe(grpc.status.PERMISSION_DENIED);
+
+    const adminMetadata = new grpc.Metadata();
+    adminMetadata.set("x-api-key", "test-admin-key");
+    const resetRuns = await invokeUnary(__testables.workflowService.ResetWorkflowRuns, {}, adminMetadata);
+    expect((resetRuns.response as { cleared: number }).cleared).toBeGreaterThanOrEqual(2);
+  });
 });

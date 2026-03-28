@@ -27,6 +27,10 @@ type GrpcClient = grpc.Client & {
   ResetNotifications: Function;
   GetSystemSnapshot: Function;
   ResetAllState: Function;
+  RunOrderWorkflow: Function;
+  GetWorkflowRun: Function;
+  ListWorkflowRuns: Function;
+  ResetWorkflowRuns: Function;
 };
 
 function loadClient(port: number): GrpcClient {
@@ -37,8 +41,9 @@ function loadClient(port: number): GrpcClient {
   const healthProtoPath = fileURLToPath(new URL("../proto/health.proto", import.meta.url));
   const notificationProtoPath = fileURLToPath(new URL("../proto/notification.proto", import.meta.url));
   const adminProtoPath = fileURLToPath(new URL("../proto/admin.proto", import.meta.url));
+  const workflowProtoPath = fileURLToPath(new URL("../proto/workflow.proto", import.meta.url));
   const packageDefinition = protoLoader.loadSync(
-    [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath, adminProtoPath],
+    [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath, adminProtoPath, workflowProtoPath],
     {
     longs: String,
     enums: String,
@@ -72,6 +77,10 @@ function loadClient(port: number): GrpcClient {
     `localhost:${port}`,
     grpc.credentials.createInsecure()
   ) as GrpcClient;
+  const workflowClient = new loaded.automation.workflow.v1.WorkflowService(
+    `localhost:${port}`,
+    grpc.credentials.createInsecure()
+  ) as GrpcClient;
   const inventoryClose = inventoryClient.close.bind(inventoryClient);
   const pricingClose = pricingClient.close.bind(pricingClient);
   const orderClose = orderClient.close.bind(orderClient);
@@ -79,6 +88,7 @@ function loadClient(port: number): GrpcClient {
   const healthClose = healthClient.close.bind(healthClient);
   const notificationClose = notificationClient.close.bind(notificationClient);
   const adminClose = adminClient.close.bind(adminClient);
+  const workflowClose = workflowClient.close.bind(workflowClient);
 
   return Object.assign(inventoryClient, {
     GetQuote: pricingClient.GetQuote.bind(pricingClient),
@@ -97,6 +107,10 @@ function loadClient(port: number): GrpcClient {
     ResetNotifications: notificationClient.ResetNotifications.bind(notificationClient),
     GetSystemSnapshot: adminClient.GetSystemSnapshot.bind(adminClient),
     ResetAllState: adminClient.ResetAllState.bind(adminClient),
+    RunOrderWorkflow: workflowClient.RunOrderWorkflow.bind(workflowClient),
+    GetWorkflowRun: workflowClient.GetWorkflowRun.bind(workflowClient),
+    ListWorkflowRuns: workflowClient.ListWorkflowRuns.bind(workflowClient),
+    ResetWorkflowRuns: workflowClient.ResetWorkflowRuns.bind(workflowClient),
     close: () => {
       inventoryClose();
       pricingClose();
@@ -105,6 +119,7 @@ function loadClient(port: number): GrpcClient {
       healthClose();
       notificationClose();
       adminClose();
+      workflowClose();
     }
   });
 }
@@ -153,6 +168,17 @@ function unary<T>(fn: Function, request: unknown, metadata?: grpc.Metadata): Pro
       return;
     }
     fn(request, callback);
+  });
+}
+
+function serverStream<T>(fn: Function, request: unknown, metadata?: grpc.Metadata): Promise<T[]> {
+  return new Promise((resolve, reject) => {
+    const stream = metadata ? fn(request, metadata) : fn(request);
+    const items: T[] = [];
+
+    stream.on("data", (item: T) => items.push(item));
+    stream.on("end", () => resolve(items));
+    stream.on("error", (error: grpc.ServiceError) => reject(error));
   });
 }
 
@@ -479,6 +505,97 @@ describe("gRPC integration", () => {
     expect(reset.clearedNotifications).toBe(1);
     expect(reset.remainingInventoryReservations).toBe(0);
     expect(reset.inventory).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-RED-CHAIR", available: 12 })]));
+  });
+
+  it("streams workflow lifecycle events and stores workflow runs", async () => {
+    await unary(client.ResetAllState.bind(client), {}, authMetadata("test-admin-key", "admin"));
+
+    const events = await serverStream<any>(
+      client.RunOrderWorkflow.bind(client),
+      {
+        orderId: "workflow-order-1",
+        sku: "SKU-RED-CHAIR",
+        quantity: 1,
+        currency: "USD",
+        intervalMs: 0
+      },
+      authMetadata("test-user-key", "user")
+    );
+
+    expect(events.map((event) => event.step)).toEqual([
+      "accepted",
+      "inventory_reserved",
+      "priced",
+      "order_created",
+      "audit_recorded",
+      "notification_published",
+      "completed"
+    ]);
+
+    const run = await unary<{ run: { orderId: string; finalStatus: string; events: Array<{ step: string }> } }>(
+      client.GetWorkflowRun.bind(client),
+      { orderId: "workflow-order-1" },
+      authMetadata("test-user-key", "user")
+    );
+    expect(run.run.orderId).toBe("workflow-order-1");
+    expect(run.run.finalStatus).toBe("completed");
+    expect(run.run.events).toHaveLength(7);
+
+    const listed = await unary<{ runs: Array<{ orderId: string }> }>(
+      client.ListWorkflowRuns.bind(client),
+      {},
+      authMetadata("test-user-key", "user")
+    );
+    expect(listed.runs).toEqual(expect.arrayContaining([expect.objectContaining({ orderId: "workflow-order-1" })]));
+  });
+
+  it("streams workflow failures, replays prior runs, and resets workflow state", async () => {
+    await unary(client.ResetAllState.bind(client), {}, authMetadata("test-admin-key", "admin"));
+
+    const failureMetadata = authMetadata("test-user-key", "user");
+    failureMetadata.set("x-workflow-failure-step", "pricing");
+
+    const failedEvents = await serverStream<any>(
+      client.RunOrderWorkflow.bind(client),
+      {
+        orderId: "workflow-order-fail",
+        sku: "SKU-BLUE-DESK",
+        quantity: 1,
+        currency: "USD",
+        intervalMs: 0
+      },
+      failureMetadata
+    );
+    expect(failedEvents.at(-1)).toMatchObject({
+      step: "failed",
+      status: "failed",
+      detail: "Injected workflow failure at pricing"
+    });
+
+    const replayedEvents = await serverStream<any>(
+      client.RunOrderWorkflow.bind(client),
+      {
+        orderId: "workflow-order-fail",
+        sku: "SKU-BLUE-DESK",
+        quantity: 1,
+        currency: "USD",
+        intervalMs: 0
+      },
+      authMetadata("test-user-key", "user")
+    );
+    expect(replayedEvents).toHaveLength(failedEvents.length);
+
+    const stock = await unary<{ item: { available: number } }>(client.GetStock.bind(client), {
+      sku: "SKU-BLUE-DESK"
+    });
+    expect(stock.item.available).toBe(5);
+
+    const reset = await unary<{ cleared: number }>(
+      client.ResetWorkflowRuns.bind(client),
+      {},
+      authMetadata("test-admin-key", "admin")
+    );
+    expect(reset.cleared).toBeGreaterThanOrEqual(1);
   });
 
   it("enforces metadata auth and role checks on protected gRPC methods", async () => {
