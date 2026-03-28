@@ -12,7 +12,7 @@ export type StoredWorkflowRun = {
   sku: string;
   quantity: number;
   currency: string;
-  finalStatus: "running" | "completed" | "failed";
+  finalStatus: "running" | "completed" | "failed" | "cancelled";
   events: StoredWorkflowEvent[];
 };
 

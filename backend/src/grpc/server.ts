@@ -1070,6 +1070,7 @@ const workflowService = {
         currency?: string;
         intervalMs?: number;
         priceShiftBasisPoints?: number;
+        autoCancelAfterStep?: string;
       },
       unknown
     >
@@ -1094,6 +1095,7 @@ const workflowService = {
     const currency = String(call.request?.currency ?? "USD");
     const intervalMs = Number(call.request?.intervalMs ?? 0);
     const priceShiftBasisPoints = Number(call.request?.priceShiftBasisPoints ?? 0);
+    const autoCancelAfterStep = String(call.request?.autoCancelAfterStep ?? "").trim();
 
     if (!sku) {
       call.destroy(orderValidationError("sku is required", grpc.status.INVALID_ARGUMENT));
@@ -1129,14 +1131,22 @@ const workflowService = {
 
     let reservationId: string | undefined;
     let orderCreated = false;
+    let streamCancelled = false;
+    let streamSettled = false;
 
     const pause = async () => {
       if (intervalMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, intervalMs);
+          timer.unref?.();
+        });
       }
     };
 
     const emit = async (step: string, status: string, detail: string) => {
+      if (streamCancelled) {
+        return;
+      }
       const event = workflowStore.appendEvent(run.runId, {
         step,
         status,
@@ -1147,12 +1157,61 @@ const workflowService = {
       await pause();
     };
 
+    const cancelWorkflow = async (detail: string) => {
+      if (streamCancelled || streamSettled) {
+        return;
+      }
+
+      streamCancelled = true;
+      if (!orderCreated && reservationId) {
+        try {
+          store.release(reservationId);
+        } catch {
+          // Ignore compensation failures in the practice SUT.
+        }
+      }
+
+      workflowStore.setFinalStatus(run.runId, "cancelled");
+      const event = workflowStore.appendEvent(run.runId, {
+        step: "cancelled",
+        status: "cancelled",
+        detail,
+        correlationId
+      });
+
+      try {
+        if (!call.cancelled) {
+          call.write(workflowEventResponse(run, event));
+        }
+      } catch {
+        // The client may have already disconnected.
+      }
+
+      try {
+        call.end();
+      } catch {
+        // Ignore end errors after cancellation/disconnect.
+      }
+    };
+
+    call.on?.("cancelled", () => {
+      void cancelWorkflow("client cancelled workflow stream");
+    });
+
     try {
       await emit("accepted", "started", "workflow accepted");
+      if (autoCancelAfterStep === "accepted" || streamCancelled) {
+        await cancelWorkflow("workflow auto-cancelled after step accepted");
+        return;
+      }
 
       const reservation = store.reserve(sku, quantity, `wf-res-${orderId}`);
       reservationId = reservation.reservationId;
       await emit("inventory_reserved", "succeeded", `reserved ${reservation.quantity} units`);
+      if (autoCancelAfterStep === "inventory_reserved" || streamCancelled) {
+        await cancelWorkflow("workflow auto-cancelled after step inventory_reserved");
+        return;
+      }
 
       if (failureStep === "pricing") {
         throw new Error("Injected workflow failure at pricing");
@@ -1166,6 +1225,10 @@ const workflowService = {
         delayMs: 0
       });
       await emit("priced", "succeeded", quote.pricingRule);
+      if (autoCancelAfterStep === "priced" || streamCancelled) {
+        await cancelWorkflow("workflow auto-cancelled after step priced");
+        return;
+      }
 
       if (failureStep === "persist") {
         throw new Error("Injected workflow failure at persist");
@@ -1184,6 +1247,10 @@ const workflowService = {
       });
       orderCreated = true;
       await emit("order_created", "succeeded", orderId);
+      if (autoCancelAfterStep === "order_created" || streamCancelled) {
+        await cancelWorkflow("workflow auto-cancelled after step order_created");
+        return;
+      }
 
       if (failureStep === "audit") {
         throw new Error("Injected workflow failure at audit");
@@ -1197,6 +1264,10 @@ const workflowService = {
         eventTimeEpochMs: Date.now()
       });
       await emit("audit_recorded", "succeeded", `audit stored for ${orderId}`);
+      if (autoCancelAfterStep === "audit_recorded" || streamCancelled) {
+        await cancelWorkflow("workflow auto-cancelled after step audit_recorded");
+        return;
+      }
 
       if (failureStep === "notify") {
         throw new Error("Injected workflow failure at notify");
@@ -1210,11 +1281,22 @@ const workflowService = {
       });
       broadcastNotification("workflow", notificationRecordResponse(notification, correlationId));
       await emit("notification_published", "succeeded", notification.messageId);
+      if (autoCancelAfterStep === "notification_published" || streamCancelled) {
+        await cancelWorkflow("workflow auto-cancelled after step notification_published");
+        return;
+      }
 
+      if (streamCancelled) {
+        return;
+      }
       workflowStore.setFinalStatus(run.runId, "completed");
       await emit("completed", "succeeded", "workflow completed");
+      streamSettled = true;
       call.end();
     } catch (error) {
+      if (streamCancelled) {
+        return;
+      }
       if (!orderCreated && reservationId) {
         try {
           store.release(reservationId);
@@ -1225,6 +1307,7 @@ const workflowService = {
 
       workflowStore.setFinalStatus(run.runId, "failed");
       await emit("failed", "failed", (error as Error).message);
+      streamSettled = true;
       call.end();
     }
   },

@@ -16,6 +16,7 @@ message RunOrderWorkflowRequest {
   string currency = 4;
   int32 intervalMs = 5;
   int32 priceShiftBasisPoints = 6;
+  string autoCancelAfterStep = 7;
 }
 
 message WorkflowEvent {

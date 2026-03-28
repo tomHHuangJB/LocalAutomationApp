@@ -662,6 +662,42 @@ describe("gRPC integration", () => {
     expect(reset.cleared).toBeGreaterThanOrEqual(1);
   });
 
+  it("supports workflow auto-cancellation and records cancelled final status", async () => {
+    await unary(client.ResetAllState.bind(client), {}, authMetadata("test-admin-key", "admin"));
+
+    const cancelledEvents = await serverStream<any>(
+      client.RunOrderWorkflow.bind(client),
+      {
+        orderId: "workflow-order-cancel",
+        sku: "SKU-RED-CHAIR",
+        quantity: 1,
+        currency: "USD",
+        intervalMs: 0,
+        autoCancelAfterStep: "priced"
+      },
+      authMetadata("test-user-key", "user")
+    );
+
+    expect(cancelledEvents.at(-1)).toMatchObject({
+      step: "cancelled",
+      status: "cancelled",
+      detail: "workflow auto-cancelled after step priced"
+    });
+
+    const run = await unary<{ run: { finalStatus: string; events: Array<{ step: string }> } }>(
+      client.GetWorkflowRun.bind(client),
+      { orderId: "workflow-order-cancel" },
+      authMetadata("test-user-key", "user")
+    );
+    expect(run.run.finalStatus).toBe("cancelled");
+    expect(run.run.events.at(-1)?.step).toBe("cancelled");
+
+    const stock = await unary<{ item: { available: number } }>(client.GetStock.bind(client), {
+      sku: "SKU-RED-CHAIR"
+    });
+    expect(stock.item.available).toBe(12);
+  });
+
   it("enforces metadata auth and role checks on protected gRPC methods", async () => {
     await expect(unary(client.GetSystemSnapshot.bind(client), {})).rejects.toMatchObject({
       code: grpc.status.UNAUTHENTICATED

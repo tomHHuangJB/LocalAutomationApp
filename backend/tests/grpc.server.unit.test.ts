@@ -600,6 +600,17 @@ describe("gRPC server handlers", () => {
       events: [expect.objectContaining({ step: "completed" })]
     });
 
+    const cancelledRun = __testables.workflowRunResponse({
+      runId: "run-cancel",
+      orderId: "order-cancel",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD",
+      finalStatus: "cancelled",
+      events: []
+    });
+    expect(cancelledRun.finalStatus).toBe("cancelled");
+
     const unauthenticatedErrors: Array<grpc.ServiceError> = [];
     await __testables.workflowService.RunOrderWorkflow({
       request: { orderId: "wf-no-auth", sku: "SKU-RED-CHAIR", quantity: 1, currency: "USD", intervalMs: 0 },
@@ -660,6 +671,28 @@ describe("gRPC server handlers", () => {
       step: "failed",
       status: "failed",
       detail: "Injected workflow failure at pricing"
+    });
+
+    const cancelledWrites: Array<any> = [];
+    await __testables.workflowService.RunOrderWorkflow({
+      request: {
+        orderId: "wf-unit-cancel",
+        sku: "SKU-RED-CHAIR",
+        quantity: 1,
+        currency: "USD",
+        intervalMs: 0,
+        autoCancelAfterStep: "priced"
+      },
+      metadata: userMetadata,
+      destroy: () => undefined,
+      write: (payload: unknown) => cancelledWrites.push(payload),
+      end: () => undefined,
+      on: () => undefined,
+      cancelled: false
+    });
+    expect(cancelledWrites.at(-1)).toMatchObject({
+      step: "cancelled",
+      status: "cancelled"
     });
 
     const getMissing = await invokeUnary(__testables.workflowService.GetWorkflowRun, { orderId: "" }, userMetadata);
