@@ -776,4 +776,21 @@ describe("gRPC server handlers", () => {
     const reset = await invokeUnary(__testables.resiliencyService.ResetAttemptCounters, {}, adminMetadata);
     expect((reset.response as { cleared: number }).cleared).toBeGreaterThanOrEqual(1);
   });
+
+  it("covers observability metadata helpers", () => {
+    const headers = __testables.observabilityMetadata(
+      "corr-1",
+      "automation.resiliency.v1.ResiliencyService",
+      "ExecuteUnstableOperation"
+    );
+    expect(headers.get("x-correlation-id")[0]).toBe("corr-1");
+    expect(headers.get("x-service-name")[0]).toBe("automation.resiliency.v1.ResiliencyService");
+    expect(headers.get("x-method-name")[0]).toBe("ExecuteUnstableOperation");
+
+    const trailers = __testables.resiliencyTrailers("retry-unit", 3, "UNAVAILABLE", "succeeded", 25);
+    expect(trailers.get("x-operation-key")[0]).toBe("retry-unit");
+    expect(trailers.get("x-attempt-number")[0]).toBe("3");
+    expect(trailers.get("x-outcome")[0]).toBe("succeeded");
+    expect(trailers.get("x-processing-delay-ms")[0]).toBe("25");
+  });
 });
