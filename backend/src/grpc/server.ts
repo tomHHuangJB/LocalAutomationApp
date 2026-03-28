@@ -263,6 +263,31 @@ function resiliencyCodeToStatus(code: string): grpc.status {
   }
 }
 
+function observabilityMetadata(correlationId: string, serviceName: string, methodName: string): grpc.Metadata {
+  const metadata = new grpc.Metadata();
+  metadata.set("x-correlation-id", correlationId);
+  metadata.set("x-service-name", serviceName);
+  metadata.set("x-method-name", methodName);
+  metadata.set("x-observability-version", "v1");
+  return metadata;
+}
+
+function resiliencyTrailers(
+  operationKey: string,
+  attemptNumber: number,
+  retryableCode: string,
+  outcome: string,
+  processingDelayMs: number
+): grpc.Metadata {
+  const metadata = new grpc.Metadata();
+  metadata.set("x-operation-key", operationKey);
+  metadata.set("x-attempt-number", String(attemptNumber));
+  metadata.set("x-retryable-code", retryableCode);
+  metadata.set("x-outcome", outcome);
+  metadata.set("x-processing-delay-ms", String(processingDelayMs));
+  return metadata;
+}
+
 function addSubscriber(channel: string, call: grpc.ServerDuplexStream<unknown, unknown>): void {
   const subscribers = notificationSubscribers.get(channel) ?? new Set();
   subscribers.add(call);
@@ -1149,6 +1174,7 @@ const workflowService = {
       quantity,
       currency
     });
+    call.sendMetadata?.(observabilityMetadata(correlationId, "automation.workflow.v1.WorkflowService", "RunOrderWorkflow"));
 
     let reservationId: string | undefined;
     let orderCreated = false;
@@ -1440,6 +1466,9 @@ const resiliencyService = {
     const failUntilAttempt = Number(call.request?.failUntilAttempt ?? 0);
     const retryableCode = String(call.request?.retryableCode ?? "UNAVAILABLE").trim().toUpperCase();
     const processingDelayMs = Number(call.request?.processingDelayMs ?? 0);
+    const correlationId = correlationIdFromMetadata(call.metadata);
+
+    call.sendMetadata?.(observabilityMetadata(correlationId, "automation.resiliency.v1.ResiliencyService", "ExecuteUnstableOperation"));
 
     if (!operationKey) {
       callback(validationError("operationKey is required", grpc.status.INVALID_ARGUMENT), null);
@@ -1468,7 +1497,8 @@ const resiliencyService = {
           `Injected ${retryableCode} for ${operationKey} on attempt ${attempt.attemptCount}`,
           resiliencyCodeToStatus(retryableCode)
         ),
-        null
+        null,
+        resiliencyTrailers(operationKey, attempt.attemptCount, retryableCode, "failed", processingDelayMs)
       );
       return;
     }
@@ -1478,8 +1508,8 @@ const resiliencyService = {
       attemptNumber: attempt.attemptCount,
       outcome: "succeeded",
       retryableCode,
-      correlationId: correlationIdFromMetadata(call.metadata)
-    });
+      correlationId
+    }, resiliencyTrailers(operationKey, attempt.attemptCount, retryableCode, "succeeded", processingDelayMs));
   },
 
   GetAttemptSnapshot(
@@ -1627,7 +1657,9 @@ export const __testables = {
   healthResponse,
   notificationRecordResponse,
   workflowEventResponse,
-  workflowRunResponse
+  workflowRunResponse,
+  observabilityMetadata,
+  resiliencyTrailers
 };
 
 export type StartedGrpcServer = {

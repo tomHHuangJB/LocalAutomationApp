@@ -195,6 +195,41 @@ function serverStream<T>(fn: Function, request: unknown, metadata?: grpc.Metadat
   });
 }
 
+function unaryWithDetails<T>(
+  fn: Function,
+  request: unknown,
+  metadata?: grpc.Metadata
+): Promise<{
+  response: T | null;
+  error: grpc.ServiceError | null;
+  headers: grpc.Metadata;
+  trailers: grpc.Metadata;
+  status: grpc.StatusObject | null;
+}> {
+  return new Promise((resolve) => {
+    let response: T | null = null;
+    let error: grpc.ServiceError | null = null;
+    let headers = new grpc.Metadata();
+    let trailers = new grpc.Metadata();
+    let status: grpc.StatusObject | null = null;
+
+    const callback = (callbackError: grpc.ServiceError | null, callbackResponse: T) => {
+      error = callbackError;
+      response = callbackResponse ?? null;
+    };
+
+    const call = metadata ? fn(request, metadata, callback) : fn(request, callback);
+    call.on("metadata", (value: grpc.Metadata) => {
+      headers = value;
+    });
+    call.on("status", (value: grpc.StatusObject) => {
+      status = value;
+      trailers = value.metadata;
+      resolve({ response, error, headers, trailers, status });
+    });
+  });
+}
+
 function waitForEvent<T>(
   getItems: () => T[],
   predicate: (item: T) => boolean,
@@ -787,6 +822,43 @@ describe("gRPC integration", () => {
 
     const reset = await unary<{ cleared: number }>(client.ResetAttemptCounters.bind(client), {}, adminMetadata);
     expect(reset.cleared).toBeGreaterThanOrEqual(1);
+  });
+
+  it("exposes resiliency headers and trailers for observability", async () => {
+    const firstAttempt = await unaryWithDetails<{ operationKey: string; attemptNumber: number }>(
+      client.ExecuteUnstableOperation.bind(client),
+      {
+        operationKey: "observability-op-1",
+        failUntilAttempt: 1,
+        retryableCode: "RESOURCE_EXHAUSTED",
+        processingDelayMs: 0
+      },
+      authMetadata("test-user-key", "user")
+    );
+
+    expect(firstAttempt.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+    expect(firstAttempt.headers.get("x-service-name")[0]).toBe("automation.resiliency.v1.ResiliencyService");
+    expect(firstAttempt.headers.get("x-method-name")[0]).toBe("ExecuteUnstableOperation");
+    expect(firstAttempt.trailers.get("x-operation-key")[0]).toBe("observability-op-1");
+    expect(firstAttempt.trailers.get("x-attempt-number")[0]).toBe("1");
+    expect(firstAttempt.trailers.get("x-outcome")[0]).toBe("failed");
+
+    const secondAttempt = await unaryWithDetails<{ operationKey: string; attemptNumber: number; outcome: string }>(
+      client.ExecuteUnstableOperation.bind(client),
+      {
+        operationKey: "observability-op-1",
+        failUntilAttempt: 1,
+        retryableCode: "RESOURCE_EXHAUSTED",
+        processingDelayMs: 0
+      },
+      authMetadata("test-user-key", "user")
+    );
+
+    expect(secondAttempt.response?.attemptNumber).toBe(2);
+    expect(secondAttempt.response?.outcome).toBe("succeeded");
+    expect(secondAttempt.trailers.get("x-attempt-number")[0]).toBe("2");
+    expect(secondAttempt.trailers.get("x-outcome")[0]).toBe("succeeded");
+    expect(secondAttempt.trailers.get("x-retryable-code")[0]).toBe("RESOURCE_EXHAUSTED");
   });
 
   it("enforces metadata auth and role checks on protected gRPC methods", async () => {
