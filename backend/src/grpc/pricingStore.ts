@@ -37,7 +37,8 @@ const BASE_PRICES_CENTS: Record<string, number> = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
   });
 }
 

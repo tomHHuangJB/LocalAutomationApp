@@ -182,6 +182,61 @@ function serverStream<T>(fn: Function, request: unknown, metadata?: grpc.Metadat
   });
 }
 
+function waitForEvent<T>(
+  getItems: () => T[],
+  predicate: (item: T) => boolean,
+  timeoutMs = 1000
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+
+    const poll = () => {
+      const match = getItems().find(predicate);
+      if (match) {
+        resolve(match);
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        reject(new Error("Timed out waiting for expected stream event"));
+        return;
+      }
+
+      const timer = setTimeout(poll, 10);
+      timer.unref?.();
+    };
+
+    poll();
+  });
+}
+
+function endClientStream(stream: grpc.ClientDuplexStream<any, any>): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      }
+    };
+
+    stream.once("end", finish);
+    stream.once("close", finish);
+    stream.once("error", finish);
+    const timeout = setTimeout(() => {
+      try {
+        stream.cancel();
+      } catch {
+        // Ignore cancellation errors during test teardown.
+      }
+      finish();
+    }, 250);
+    timeout.unref?.();
+    stream.end();
+  });
+}
+
 function authMetadata(apiKey: string, role?: string): grpc.Metadata {
   const metadata = new grpc.Metadata();
   metadata.set("x-api-key", apiKey);
@@ -374,7 +429,10 @@ describe("gRPC integration", () => {
       }
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitForEvent(
+      () => subscriberEvents,
+      (message) => Boolean(message.connected?.channel === "ops")
+    );
     expect(subscriberEvents).toContainEqual(expect.objectContaining({ connected: expect.objectContaining({ channel: "ops" }) }));
 
     const publisher = client.Connect(authMetadata("test-user-key", "user"));
@@ -393,7 +451,14 @@ describe("gRPC integration", () => {
       }
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitForEvent(
+      () => publisherEvents,
+      (message) => Boolean(message.ack?.messageId === "msg-ci-1")
+    );
+    await waitForEvent(
+      () => subscriberEvents,
+      (message) => Boolean(message.broadcast?.messageId === "msg-ci-1" && message.broadcast?.replay === false)
+    );
     expect(publisherEvents).toContainEqual(
       expect.objectContaining({ ack: expect.objectContaining({ messageId: "msg-ci-1", sequenceNumber: 1 }) })
     );
@@ -415,7 +480,10 @@ describe("gRPC integration", () => {
       }
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitForEvent(
+      () => replayEvents,
+      (message) => Boolean(message.broadcast?.messageId === "msg-ci-1" && message.broadcast?.replay === true)
+    );
     expect(replayEvents).toContainEqual(
       expect.objectContaining({ broadcast: expect.objectContaining({ messageId: "msg-ci-1", replay: true }) })
     );
@@ -427,9 +495,7 @@ describe("gRPC integration", () => {
     );
     expect(listed.notifications).toEqual([expect.objectContaining({ messageId: "msg-ci-1", channel: "ops" })]);
 
-    subscriber.end();
-    publisher.end();
-    replayClient.end();
+    await Promise.all([endClientStream(subscriber), endClientStream(publisher), endClientStream(replayClient)]);
   });
 
   it("provides admin snapshot and reset across all gRPC-backed state", async () => {
@@ -478,8 +544,7 @@ describe("gRPC integration", () => {
         senderId: "bot-admin"
       }
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    notificationStream.end();
+    await endClientStream(notificationStream);
 
     const snapshot = await unary<{
       inventory: { skuCount: number; activeReservationCount: number };
