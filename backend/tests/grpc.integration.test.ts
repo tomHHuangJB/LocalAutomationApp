@@ -31,6 +31,9 @@ type GrpcClient = grpc.Client & {
   GetWorkflowRun: Function;
   ListWorkflowRuns: Function;
   ResetWorkflowRuns: Function;
+  ExecuteUnstableOperation: Function;
+  GetAttemptSnapshot: Function;
+  ResetAttemptCounters: Function;
 };
 
 function loadClient(port: number): GrpcClient {
@@ -42,8 +45,9 @@ function loadClient(port: number): GrpcClient {
   const notificationProtoPath = fileURLToPath(new URL("../proto/notification.proto", import.meta.url));
   const adminProtoPath = fileURLToPath(new URL("../proto/admin.proto", import.meta.url));
   const workflowProtoPath = fileURLToPath(new URL("../proto/workflow.proto", import.meta.url));
+  const resiliencyProtoPath = fileURLToPath(new URL("../proto/resiliency.proto", import.meta.url));
   const packageDefinition = protoLoader.loadSync(
-    [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath, adminProtoPath, workflowProtoPath],
+    [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath, adminProtoPath, workflowProtoPath, resiliencyProtoPath],
     {
     longs: String,
     enums: String,
@@ -81,6 +85,10 @@ function loadClient(port: number): GrpcClient {
     `localhost:${port}`,
     grpc.credentials.createInsecure()
   ) as GrpcClient;
+  const resiliencyClient = new loaded.automation.resiliency.v1.ResiliencyService(
+    `localhost:${port}`,
+    grpc.credentials.createInsecure()
+  ) as GrpcClient;
   const inventoryClose = inventoryClient.close.bind(inventoryClient);
   const pricingClose = pricingClient.close.bind(pricingClient);
   const orderClose = orderClient.close.bind(orderClient);
@@ -89,6 +97,7 @@ function loadClient(port: number): GrpcClient {
   const notificationClose = notificationClient.close.bind(notificationClient);
   const adminClose = adminClient.close.bind(adminClient);
   const workflowClose = workflowClient.close.bind(workflowClient);
+  const resiliencyClose = resiliencyClient.close.bind(resiliencyClient);
 
   return Object.assign(inventoryClient, {
     GetQuote: pricingClient.GetQuote.bind(pricingClient),
@@ -111,6 +120,9 @@ function loadClient(port: number): GrpcClient {
     GetWorkflowRun: workflowClient.GetWorkflowRun.bind(workflowClient),
     ListWorkflowRuns: workflowClient.ListWorkflowRuns.bind(workflowClient),
     ResetWorkflowRuns: workflowClient.ResetWorkflowRuns.bind(workflowClient),
+    ExecuteUnstableOperation: resiliencyClient.ExecuteUnstableOperation.bind(resiliencyClient),
+    GetAttemptSnapshot: resiliencyClient.GetAttemptSnapshot.bind(resiliencyClient),
+    ResetAttemptCounters: resiliencyClient.ResetAttemptCounters.bind(resiliencyClient),
     close: () => {
       inventoryClose();
       pricingClose();
@@ -120,6 +132,7 @@ function loadClient(port: number): GrpcClient {
       notificationClose();
       adminClose();
       workflowClose();
+      resiliencyClose();
     }
   });
 }
@@ -696,6 +709,84 @@ describe("gRPC integration", () => {
       sku: "SKU-RED-CHAIR"
     });
     expect(stock.item.available).toBe(12);
+  });
+
+  it("supports retryable resiliency scenarios and attempt snapshots", async () => {
+    const adminMetadata = authMetadata("test-admin-key", "admin");
+    const userMetadata = authMetadata("test-user-key", "user");
+
+    await unary(client.ResetAttemptCounters.bind(client), {}, adminMetadata);
+
+    await expect(
+      unary(
+        client.ExecuteUnstableOperation.bind(client),
+        {
+          operationKey: "retry-op-1",
+          failUntilAttempt: 2,
+          retryableCode: "UNAVAILABLE",
+          processingDelayMs: 0
+        },
+        userMetadata
+      )
+    ).rejects.toMatchObject({ code: grpc.status.UNAVAILABLE });
+
+    await expect(
+      unary(
+        client.ExecuteUnstableOperation.bind(client),
+        {
+          operationKey: "retry-op-1",
+          failUntilAttempt: 2,
+          retryableCode: "UNAVAILABLE",
+          processingDelayMs: 0
+        },
+        userMetadata
+      )
+    ).rejects.toMatchObject({ code: grpc.status.UNAVAILABLE });
+
+    const success = await unary<{ operationKey: string; attemptNumber: number; outcome: string }>(
+      client.ExecuteUnstableOperation.bind(client),
+      {
+        operationKey: "retry-op-1",
+        failUntilAttempt: 2,
+        retryableCode: "UNAVAILABLE",
+        processingDelayMs: 0
+      },
+      userMetadata
+    );
+    expect(success.attemptNumber).toBe(3);
+    expect(success.outcome).toBe("succeeded");
+
+    const snapshot = await unary<{ attempts: Array<{ operationKey: string; attemptCount: number }> }>(
+      client.GetAttemptSnapshot.bind(client),
+      { operationKey: "retry-op-1" },
+      userMetadata
+    );
+    expect(snapshot.attempts).toEqual([expect.objectContaining({ operationKey: "retry-op-1", attemptCount: 3 })]);
+  });
+
+  it("supports deadline-style delay testing and resiliency auth/reset rules", async () => {
+    const adminMetadata = authMetadata("test-admin-key", "admin");
+    const userMetadata = authMetadata("test-user-key", "user");
+
+    const delayed = await unary<{ attemptNumber: number; outcome: string }>(
+      client.ExecuteUnstableOperation.bind(client),
+      {
+        operationKey: "deadline-op-1",
+        failUntilAttempt: 0,
+        retryableCode: "DEADLINE_EXCEEDED",
+        processingDelayMs: 25
+      },
+      userMetadata
+    );
+    expect(delayed.attemptNumber).toBe(1);
+    expect(delayed.outcome).toBe("succeeded");
+
+    await expect(
+      unary(client.ResetAttemptCounters.bind(client), {}, userMetadata)
+    ).rejects.toMatchObject({ code: grpc.status.PERMISSION_DENIED });
+
+    const reset = await unary<{ cleared: number }>(client.ResetAttemptCounters.bind(client), {}, adminMetadata);
+    expect(reset.cleared).toBeGreaterThanOrEqual(1);
   });
 
   it("enforces metadata auth and role checks on protected gRPC methods", async () => {

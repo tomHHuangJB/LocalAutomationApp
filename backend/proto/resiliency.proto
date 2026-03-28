@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package automation.resiliency.v1;
+
+service ResiliencyService {
+  rpc ExecuteUnstableOperation(ExecuteUnstableOperationRequest) returns (ExecuteUnstableOperationResponse);
+  rpc GetAttemptSnapshot(GetAttemptSnapshotRequest) returns (GetAttemptSnapshotResponse);
+  rpc ResetAttemptCounters(ResetAttemptCountersRequest) returns (ResetAttemptCountersResponse);
+}
+
+message ExecuteUnstableOperationRequest {
+  string operationKey = 1;
+  int32 failUntilAttempt = 2;
+  string retryableCode = 3;
+  int32 processingDelayMs = 4;
+}
+
+message ExecuteUnstableOperationResponse {
+  string operationKey = 1;
+  int32 attemptNumber = 2;
+  string outcome = 3;
+  string retryableCode = 4;
+  string correlationId = 5;
+}
+
+message GetAttemptSnapshotRequest {
+  string operationKey = 1;
+}
+
+message AttemptRecord {
+  string operationKey = 1;
+  int32 attemptCount = 2;
+}
+
+message GetAttemptSnapshotResponse {
+  repeated AttemptRecord attempts = 1;
+  string correlationId = 2;
+}
+
+message ResetAttemptCountersRequest {}
+
+message ResetAttemptCountersResponse {
+  int32 cleared = 1;
+  string correlationId = 2;
+}

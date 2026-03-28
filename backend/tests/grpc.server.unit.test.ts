@@ -712,4 +712,68 @@ describe("gRPC server handlers", () => {
     const resetRuns = await invokeUnary(__testables.workflowService.ResetWorkflowRuns, {}, adminMetadata);
     expect((resetRuns.response as { cleared: number }).cleared).toBeGreaterThanOrEqual(2);
   });
+
+  it("covers resiliency handler branches", async () => {
+    const missingAuth = await invokeUnary(__testables.resiliencyService.ExecuteUnstableOperation, {
+      operationKey: "retry-unit",
+      failUntilAttempt: 1,
+      retryableCode: "UNAVAILABLE",
+      processingDelayMs: 0
+    });
+    expect(missingAuth.error?.code).toBe(grpc.status.UNAUTHENTICATED);
+
+    const userMetadata = new grpc.Metadata();
+    userMetadata.set("x-api-key", "test-user-key");
+
+    const invalidKey = await invokeUnary(__testables.resiliencyService.ExecuteUnstableOperation, {
+      operationKey: "",
+      failUntilAttempt: 1,
+      retryableCode: "UNAVAILABLE",
+      processingDelayMs: 0
+    }, userMetadata);
+    expect(invalidKey.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const invalidAttempt = await invokeUnary(__testables.resiliencyService.ExecuteUnstableOperation, {
+      operationKey: "retry-unit",
+      failUntilAttempt: 21,
+      retryableCode: "UNAVAILABLE",
+      processingDelayMs: 0
+    }, userMetadata);
+    expect(invalidAttempt.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const invalidDelay = await invokeUnary(__testables.resiliencyService.ExecuteUnstableOperation, {
+      operationKey: "retry-unit",
+      failUntilAttempt: 1,
+      retryableCode: "UNAVAILABLE",
+      processingDelayMs: 5001
+    }, userMetadata);
+    expect(invalidDelay.error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+
+    const firstAttempt = await invokeUnary(__testables.resiliencyService.ExecuteUnstableOperation, {
+      operationKey: "retry-unit",
+      failUntilAttempt: 1,
+      retryableCode: "RESOURCE_EXHAUSTED",
+      processingDelayMs: 0
+    }, userMetadata);
+    expect(firstAttempt.error?.code).toBe(grpc.status.RESOURCE_EXHAUSTED);
+
+    const secondAttempt = await invokeUnary(__testables.resiliencyService.ExecuteUnstableOperation, {
+      operationKey: "retry-unit",
+      failUntilAttempt: 1,
+      retryableCode: "RESOURCE_EXHAUSTED",
+      processingDelayMs: 0
+    }, userMetadata);
+    expect((secondAttempt.response as { attemptNumber: number; outcome: string }).attemptNumber).toBe(2);
+
+    const snapshot = await invokeUnary(__testables.resiliencyService.GetAttemptSnapshot, { operationKey: "retry-unit" }, userMetadata);
+    expect((snapshot.response as { attempts: Array<{ attemptCount: number }> }).attempts[0].attemptCount).toBe(2);
+
+    const resetDenied = await invokeUnary(__testables.resiliencyService.ResetAttemptCounters, {}, userMetadata);
+    expect(resetDenied.error?.code).toBe(grpc.status.PERMISSION_DENIED);
+
+    const adminMetadata = new grpc.Metadata();
+    adminMetadata.set("x-api-key", "test-admin-key");
+    const reset = await invokeUnary(__testables.resiliencyService.ResetAttemptCounters, {}, adminMetadata);
+    expect((reset.response as { cleared: number }).cleared).toBeGreaterThanOrEqual(1);
+  });
 });
