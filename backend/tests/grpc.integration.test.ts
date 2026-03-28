@@ -236,7 +236,6 @@ function endClientStream(stream: grpc.ClientDuplexStream<any, any>): Promise<voi
     stream.end();
   });
 }
-
 function authMetadata(apiKey: string, role?: string): grpc.Metadata {
   const metadata = new grpc.Metadata();
   metadata.set("x-api-key", apiKey);
