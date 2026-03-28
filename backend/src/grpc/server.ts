@@ -13,6 +13,7 @@ import {
   toMoney,
   type ComputedQuote
 } from "./pricingStore.js";
+import { WorkflowStore, type StoredWorkflowEvent, type StoredWorkflowRun } from "./workflowStore.js";
 
 const inventoryProtoPath = fileURLToPath(new URL("../../proto/inventory.proto", import.meta.url));
 const pricingProtoPath = fileURLToPath(new URL("../../proto/pricing.proto", import.meta.url));
@@ -21,8 +22,18 @@ const auditProtoPath = fileURLToPath(new URL("../../proto/audit.proto", import.m
 const healthProtoPath = fileURLToPath(new URL("../../proto/health.proto", import.meta.url));
 const notificationProtoPath = fileURLToPath(new URL("../../proto/notification.proto", import.meta.url));
 const adminProtoPath = fileURLToPath(new URL("../../proto/admin.proto", import.meta.url));
+const workflowProtoPath = fileURLToPath(new URL("../../proto/workflow.proto", import.meta.url));
 const packageDefinition = protoLoader.loadSync(
-  [inventoryProtoPath, pricingProtoPath, orderProtoPath, auditProtoPath, healthProtoPath, notificationProtoPath, adminProtoPath],
+  [
+    inventoryProtoPath,
+    pricingProtoPath,
+    orderProtoPath,
+    auditProtoPath,
+    healthProtoPath,
+    notificationProtoPath,
+    adminProtoPath,
+    workflowProtoPath
+  ],
   {
     longs: String,
     enums: String,
@@ -38,12 +49,14 @@ const auditPackage = loaded.automation.audit.v1;
 const healthPackage = loaded.grpc.health.v1;
 const notificationPackage = loaded.automation.notification.v1;
 const adminPackage = loaded.automation.admin.v1;
+const workflowPackage = loaded.automation.workflow.v1;
 
 const auditStore = new AuditStore();
 const store = new InventoryStore();
 const pricingStore = new PricingStore();
 const orderStore = new OrderStore();
 const notificationStore = new NotificationStore();
+const workflowStore = new WorkflowStore();
 const notificationSubscribers = new Map<string, Set<grpc.ServerDuplexStream<unknown, unknown>>>();
 
 const knownHealthServices = new Set([
@@ -54,7 +67,8 @@ const knownHealthServices = new Set([
   "automation.audit.v1.AuditService",
   "grpc.health.v1.Health",
   "automation.notification.v1.NotificationService",
-  "automation.admin.v1.AdminService"
+  "automation.admin.v1.AdminService",
+  "automation.workflow.v1.WorkflowService"
 ]);
 
 const apiKeyRoles = new Map<string, "admin" | "user" | "service">([
@@ -196,6 +210,35 @@ function notificationRecordResponse(notification: StoredNotification, correlatio
       replay,
       correlationId
     }
+  };
+}
+
+function workflowFailureStepFromMetadata(metadata: grpc.Metadata): string {
+  const header = metadata.get("x-workflow-failure-step")[0];
+  return typeof header === "string" ? header : "";
+}
+
+function workflowEventResponse(run: StoredWorkflowRun, event: StoredWorkflowEvent) {
+  return {
+    runId: run.runId,
+    orderId: run.orderId,
+    step: event.step,
+    status: event.status,
+    detail: event.detail,
+    sequenceNumber: event.sequenceNumber,
+    correlationId: event.correlationId
+  };
+}
+
+function workflowRunResponse(run: StoredWorkflowRun) {
+  return {
+    runId: run.runId,
+    orderId: run.orderId,
+    sku: run.sku,
+    quantity: run.quantity,
+    currency: run.currency,
+    finalStatus: run.finalStatus,
+    events: run.events.map((event) => workflowEventResponse(run, event))
   };
 }
 
@@ -1017,6 +1060,253 @@ const notificationService = {
   }
 };
 
+const workflowService = {
+  async RunOrderWorkflow(
+    call: grpc.ServerWritableStream<
+      {
+        orderId?: string;
+        sku?: string;
+        quantity?: number;
+        currency?: string;
+        intervalMs?: number;
+        priceShiftBasisPoints?: number;
+      },
+      unknown
+    >
+  ): Promise<void> {
+    const authFailure = requireAuth(call.metadata, ["user", "admin"]);
+    if (authFailure) {
+      call.destroy(authFailure);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      call.destroy(injected);
+      return;
+    }
+
+    const correlationId = correlationIdFromMetadata(call.metadata);
+    const failureStep = workflowFailureStepFromMetadata(call.metadata);
+    const orderId = String(call.request?.orderId ?? "").trim() || randomUUID();
+    const sku = String(call.request?.sku ?? "").trim();
+    const quantity = Number(call.request?.quantity ?? 0);
+    const currency = String(call.request?.currency ?? "USD");
+    const intervalMs = Number(call.request?.intervalMs ?? 0);
+    const priceShiftBasisPoints = Number(call.request?.priceShiftBasisPoints ?? 0);
+
+    if (!sku) {
+      call.destroy(orderValidationError("sku is required", grpc.status.INVALID_ARGUMENT));
+      return;
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      call.destroy(orderValidationError("quantity must be a positive integer", grpc.status.INVALID_ARGUMENT));
+      return;
+    }
+    if (!Number.isInteger(intervalMs) || intervalMs < 0 || intervalMs > 2000) {
+      call.destroy(orderValidationError("intervalMs must be an integer between 0 and 2000", grpc.status.INVALID_ARGUMENT));
+      return;
+    }
+
+    try {
+      const existingRun = workflowStore.getByOrderId(orderId);
+      for (const event of existingRun.events) {
+        call.write(workflowEventResponse(existingRun, event));
+      }
+      call.end();
+      return;
+    } catch {
+      // No prior workflow run for this order.
+    }
+
+    const run = workflowStore.create({
+      runId: randomUUID(),
+      orderId,
+      sku,
+      quantity,
+      currency
+    });
+
+    let reservationId: string | undefined;
+    let orderCreated = false;
+
+    const pause = async () => {
+      if (intervalMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    };
+
+    const emit = async (step: string, status: string, detail: string) => {
+      const event = workflowStore.appendEvent(run.runId, {
+        step,
+        status,
+        detail,
+        correlationId
+      });
+      call.write(workflowEventResponse(run, event));
+      await pause();
+    };
+
+    try {
+      await emit("accepted", "started", "workflow accepted");
+
+      const reservation = store.reserve(sku, quantity, `wf-res-${orderId}`);
+      reservationId = reservation.reservationId;
+      await emit("inventory_reserved", "succeeded", `reserved ${reservation.quantity} units`);
+
+      if (failureStep === "pricing") {
+        throw new Error("Injected workflow failure at pricing");
+      }
+
+      const quote = await pricingStore.getQuote({
+        sku,
+        quantity,
+        currency,
+        shiftBasisPoints: priceShiftBasisPoints,
+        delayMs: 0
+      });
+      await emit("priced", "succeeded", quote.pricingRule);
+
+      if (failureStep === "persist") {
+        throw new Error("Injected workflow failure at persist");
+      }
+
+      orderStore.create({
+        orderId,
+        reservationId: reservation.reservationId,
+        sku: reservation.sku,
+        quantity: reservation.quantity,
+        currency: quote.currency,
+        unitPriceCents: quote.unitPriceCents,
+        totalPriceCents: quote.totalPriceCents,
+        pricingRule: quote.pricingRule,
+        status: "created"
+      });
+      orderCreated = true;
+      await emit("order_created", "succeeded", orderId);
+
+      if (failureStep === "audit") {
+        throw new Error("Injected workflow failure at audit");
+      }
+
+      auditStore.add({
+        eventId: randomUUID(),
+        eventType: "workflow_order_created",
+        entityId: orderId,
+        payload: JSON.stringify({ sku, quantity }),
+        eventTimeEpochMs: Date.now()
+      });
+      await emit("audit_recorded", "succeeded", `audit stored for ${orderId}`);
+
+      if (failureStep === "notify") {
+        throw new Error("Injected workflow failure at notify");
+      }
+
+      const notification = notificationStore.publish({
+        messageId: randomUUID(),
+        channel: "workflow",
+        body: `workflow completed for ${orderId}`,
+        senderId: "workflow-service"
+      });
+      broadcastNotification("workflow", notificationRecordResponse(notification, correlationId));
+      await emit("notification_published", "succeeded", notification.messageId);
+
+      workflowStore.setFinalStatus(run.runId, "completed");
+      await emit("completed", "succeeded", "workflow completed");
+      call.end();
+    } catch (error) {
+      if (!orderCreated && reservationId) {
+        try {
+          store.release(reservationId);
+        } catch {
+          // Ignore compensation failures in the practice SUT.
+        }
+      }
+
+      workflowStore.setFinalStatus(run.runId, "failed");
+      await emit("failed", "failed", (error as Error).message);
+      call.end();
+    }
+  },
+
+  GetWorkflowRun(
+    call: grpc.ServerUnaryCall<{ orderId?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const orderId = String(call.request?.orderId ?? "").trim();
+    if (!orderId) {
+      callback(orderValidationError("orderId is required", grpc.status.INVALID_ARGUMENT), null);
+      return;
+    }
+
+    try {
+      const run = workflowStore.getByOrderId(orderId);
+      callback(null, {
+        run: workflowRunResponse(run),
+        correlationId: correlationIdFromMetadata(call.metadata)
+      });
+    } catch (error) {
+      callback(orderValidationError((error as Error).message, grpc.status.NOT_FOUND), null);
+    }
+  },
+
+  ListWorkflowRuns(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      runs: workflowStore.list().map(workflowRunResponse),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  },
+
+  ResetWorkflowRuns(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      cleared: workflowStore.reset(),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  }
+};
+
 const adminService = {
   GetSystemSnapshot(
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
@@ -1052,6 +1342,9 @@ const adminService = {
           0
         )
       },
+      workflows: {
+        runCount: workflowStore.list().length
+      },
       correlationId: correlationIdFromMetadata(call.metadata)
     });
   },
@@ -1075,6 +1368,7 @@ const adminService = {
     const clearedOrders = orderStore.reset();
     const clearedAuditEvents = auditStore.reset();
     const clearedNotifications = notificationStore.reset();
+    const clearedWorkflowRuns = workflowStore.reset();
     store.reset();
     notificationSubscribers.clear();
 
@@ -1082,6 +1376,7 @@ const adminService = {
       clearedOrders,
       clearedAuditEvents,
       clearedNotifications,
+      clearedWorkflowRuns,
       remainingInventoryReservations: store.reservationCount(),
       inventory: store.listStock(),
       correlationId: correlationIdFromMetadata(call.metadata)
@@ -1097,11 +1392,14 @@ export const __testables = {
   healthService,
   notificationService,
   adminService,
+  workflowService,
   quoteResponse,
   orderResponse,
   auditEventResponse,
   healthResponse,
-  notificationRecordResponse
+  notificationRecordResponse,
+  workflowEventResponse,
+  workflowRunResponse
 };
 
 export type StartedGrpcServer = {
@@ -1118,6 +1416,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   server.addService(healthPackage.Health.service, healthService);
   server.addService(notificationPackage.NotificationService.service, notificationService);
   server.addService(adminPackage.AdminService.service, adminService);
+  server.addService(workflowPackage.WorkflowService.service, workflowService);
   new ReflectionService(packageDefinition).addToServer(server);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
@@ -1130,7 +1429,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
     });
   });
 
-  console.log(`gRPC inventory, pricing, order, audit, health, notification, and admin server running on ${boundPort}`);
+  console.log(`gRPC inventory, pricing, order, audit, health, notification, admin, and workflow server running on ${boundPort}`);
 
   return {
     port: boundPort,

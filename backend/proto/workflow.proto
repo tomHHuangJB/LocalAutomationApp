@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package automation.workflow.v1;
+
+service WorkflowService {
+  rpc RunOrderWorkflow(RunOrderWorkflowRequest) returns (stream WorkflowEvent);
+  rpc GetWorkflowRun(GetWorkflowRunRequest) returns (GetWorkflowRunResponse);
+  rpc ListWorkflowRuns(ListWorkflowRunsRequest) returns (ListWorkflowRunsResponse);
+  rpc ResetWorkflowRuns(ResetWorkflowRunsRequest) returns (ResetWorkflowRunsResponse);
+}
+
+message RunOrderWorkflowRequest {
+  string orderId = 1;
+  string sku = 2;
+  int32 quantity = 3;
+  string currency = 4;
+  int32 intervalMs = 5;
+  int32 priceShiftBasisPoints = 6;
+}
+
+message WorkflowEvent {
+  string runId = 1;
+  string orderId = 2;
+  string step = 3;
+  string status = 4;
+  string detail = 5;
+  int32 sequenceNumber = 6;
+  string correlationId = 7;
+}
+
+message WorkflowRunRecord {
+  string runId = 1;
+  string orderId = 2;
+  string sku = 3;
+  int32 quantity = 4;
+  string currency = 5;
+  string finalStatus = 6;
+  repeated WorkflowEvent events = 7;
+}
+
+message GetWorkflowRunRequest {
+  string orderId = 1;
+}
+
+message GetWorkflowRunResponse {
+  WorkflowRunRecord run = 1;
+  string correlationId = 2;
+}
+
+message ListWorkflowRunsRequest {}
+
+message ListWorkflowRunsResponse {
+  repeated WorkflowRunRecord runs = 1;
+  string correlationId = 2;
+}
+
+message ResetWorkflowRunsRequest {}
+
+message ResetWorkflowRunsResponse {
+  int32 cleared = 1;
+  string correlationId = 2;
+}

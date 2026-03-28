@@ -3,6 +3,7 @@ import { InventoryStore } from "../src/grpc/inventoryStore.js";
 import { NotificationStore } from "../src/grpc/notificationStore.js";
 import { OrderStore } from "../src/grpc/orderStore.js";
 import { PricingStore, pricingValidationError, toMoney } from "../src/grpc/pricingStore.js";
+import { WorkflowStore } from "../src/grpc/workflowStore.js";
 
 describe("gRPC stores", () => {
   it("supports inventory reserve, idempotent reserve, release, and reset", () => {
@@ -196,5 +197,54 @@ describe("gRPC stores", () => {
     expect(store.list()).toHaveLength(3);
     expect(store.reset()).toBe(3);
     expect(store.list()).toHaveLength(0);
+  });
+
+  it("supports workflow run create, append, get, list, final status, and reset", () => {
+    const store = new WorkflowStore();
+
+    const created = store.create({
+      runId: "run-1",
+      orderId: "order-1",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD"
+    });
+    expect(created.finalStatus).toBe("running");
+
+    const duplicate = store.create({
+      runId: "run-2",
+      orderId: "order-1",
+      sku: "SKU-BLUE-DESK",
+      quantity: 2,
+      currency: "USD"
+    });
+    expect(duplicate.runId).toBe("run-1");
+
+    const firstEvent = store.appendEvent("run-1", {
+      step: "accepted",
+      status: "started",
+      detail: "workflow accepted",
+      correlationId: "corr-1"
+    });
+    expect(firstEvent.sequenceNumber).toBe(1);
+
+    store.appendEvent("run-1", {
+      step: "completed",
+      status: "succeeded",
+      detail: "workflow completed",
+      correlationId: "corr-1"
+    });
+    store.setFinalStatus("run-1", "completed");
+
+    expect(store.getByOrderId("order-1").events).toHaveLength(2);
+    expect(store.list()).toHaveLength(1);
+    expect(store.reset()).toBe(1);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("raises workflow lookup errors for unknown run and order", () => {
+    const store = new WorkflowStore();
+    expect(() => store.getByRunId("missing-run")).toThrow("Unknown workflow run: missing-run");
+    expect(() => store.getByOrderId("missing-order")).toThrow("Unknown workflow order: missing-order");
   });
 });
