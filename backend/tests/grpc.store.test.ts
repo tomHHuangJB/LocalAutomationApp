@@ -3,6 +3,7 @@ import { InventoryStore } from "../src/grpc/inventoryStore.js";
 import { NotificationStore } from "../src/grpc/notificationStore.js";
 import { OrderStore } from "../src/grpc/orderStore.js";
 import { PricingStore, pricingValidationError, toMoney } from "../src/grpc/pricingStore.js";
+import { ResiliencyStore } from "../src/grpc/resiliencyStore.js";
 import { WorkflowStore } from "../src/grpc/workflowStore.js";
 
 describe("gRPC stores", () => {
@@ -260,5 +261,17 @@ describe("gRPC stores", () => {
     const store = new WorkflowStore();
     expect(() => store.getByRunId("missing-run")).toThrow("Unknown workflow run: missing-run");
     expect(() => store.getByOrderId("missing-order")).toThrow("Unknown workflow order: missing-order");
+  });
+
+  it("tracks resiliency attempts and resets counters", () => {
+    const store = new ResiliencyStore();
+
+    expect(store.increment("retry-op")).toEqual({ operationKey: "retry-op", attemptCount: 1 });
+    expect(store.increment("retry-op")).toEqual({ operationKey: "retry-op", attemptCount: 2 });
+    expect(store.get("retry-op")).toEqual({ operationKey: "retry-op", attemptCount: 2 });
+    expect(store.get("missing-op")).toEqual({ operationKey: "missing-op", attemptCount: 0 });
+    expect(store.list()).toEqual([expect.objectContaining({ operationKey: "retry-op", attemptCount: 2 })]);
+    expect(store.reset()).toBe(1);
+    expect(store.list()).toHaveLength(0);
   });
 });

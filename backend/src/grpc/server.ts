@@ -13,6 +13,7 @@ import {
   toMoney,
   type ComputedQuote
 } from "./pricingStore.js";
+import { ResiliencyStore } from "./resiliencyStore.js";
 import { WorkflowStore, type StoredWorkflowEvent, type StoredWorkflowRun } from "./workflowStore.js";
 
 const inventoryProtoPath = fileURLToPath(new URL("../../proto/inventory.proto", import.meta.url));
@@ -23,6 +24,7 @@ const healthProtoPath = fileURLToPath(new URL("../../proto/health.proto", import
 const notificationProtoPath = fileURLToPath(new URL("../../proto/notification.proto", import.meta.url));
 const adminProtoPath = fileURLToPath(new URL("../../proto/admin.proto", import.meta.url));
 const workflowProtoPath = fileURLToPath(new URL("../../proto/workflow.proto", import.meta.url));
+const resiliencyProtoPath = fileURLToPath(new URL("../../proto/resiliency.proto", import.meta.url));
 const packageDefinition = protoLoader.loadSync(
   [
     inventoryProtoPath,
@@ -32,7 +34,8 @@ const packageDefinition = protoLoader.loadSync(
     healthProtoPath,
     notificationProtoPath,
     adminProtoPath,
-    workflowProtoPath
+    workflowProtoPath,
+    resiliencyProtoPath
   ],
   {
     longs: String,
@@ -50,6 +53,7 @@ const healthPackage = loaded.grpc.health.v1;
 const notificationPackage = loaded.automation.notification.v1;
 const adminPackage = loaded.automation.admin.v1;
 const workflowPackage = loaded.automation.workflow.v1;
+const resiliencyPackage = loaded.automation.resiliency.v1;
 
 const auditStore = new AuditStore();
 const store = new InventoryStore();
@@ -57,6 +61,7 @@ const pricingStore = new PricingStore();
 const orderStore = new OrderStore();
 const notificationStore = new NotificationStore();
 const workflowStore = new WorkflowStore();
+const resiliencyStore = new ResiliencyStore();
 const notificationSubscribers = new Map<string, Set<grpc.ServerDuplexStream<unknown, unknown>>>();
 
 const knownHealthServices = new Set([
@@ -68,7 +73,8 @@ const knownHealthServices = new Set([
   "grpc.health.v1.Health",
   "automation.notification.v1.NotificationService",
   "automation.admin.v1.AdminService",
-  "automation.workflow.v1.WorkflowService"
+  "automation.workflow.v1.WorkflowService",
+  "automation.resiliency.v1.ResiliencyService"
 ]);
 
 const apiKeyRoles = new Map<string, "admin" | "user" | "service">([
@@ -240,6 +246,21 @@ function workflowRunResponse(run: StoredWorkflowRun) {
     finalStatus: run.finalStatus,
     events: run.events.map((event) => workflowEventResponse(run, event))
   };
+}
+
+function resiliencyCodeToStatus(code: string): grpc.status {
+  switch (code.trim().toUpperCase()) {
+    case "UNAVAILABLE":
+      return grpc.status.UNAVAILABLE;
+    case "RESOURCE_EXHAUSTED":
+      return grpc.status.RESOURCE_EXHAUSTED;
+    case "ABORTED":
+      return grpc.status.ABORTED;
+    case "DEADLINE_EXCEEDED":
+      return grpc.status.DEADLINE_EXCEEDED;
+    default:
+      return grpc.status.UNAVAILABLE;
+  }
 }
 
 function addSubscriber(channel: string, call: grpc.ServerDuplexStream<unknown, unknown>): void {
@@ -1390,6 +1411,124 @@ const workflowService = {
   }
 };
 
+const resiliencyService = {
+  async ExecuteUnstableOperation(
+    call: grpc.ServerUnaryCall<
+      {
+        operationKey?: string;
+        failUntilAttempt?: number;
+        retryableCode?: string;
+        processingDelayMs?: number;
+      },
+      unknown
+    >,
+    callback: grpc.sendUnaryData<unknown>
+  ): Promise<void> {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const operationKey = String(call.request?.operationKey ?? "").trim();
+    const failUntilAttempt = Number(call.request?.failUntilAttempt ?? 0);
+    const retryableCode = String(call.request?.retryableCode ?? "UNAVAILABLE").trim().toUpperCase();
+    const processingDelayMs = Number(call.request?.processingDelayMs ?? 0);
+
+    if (!operationKey) {
+      callback(validationError("operationKey is required", grpc.status.INVALID_ARGUMENT), null);
+      return;
+    }
+    if (!Number.isInteger(failUntilAttempt) || failUntilAttempt < 0 || failUntilAttempt > 20) {
+      callback(validationError("failUntilAttempt must be an integer between 0 and 20", grpc.status.INVALID_ARGUMENT), null);
+      return;
+    }
+    if (!Number.isInteger(processingDelayMs) || processingDelayMs < 0 || processingDelayMs > 5000) {
+      callback(validationError("processingDelayMs must be an integer between 0 and 5000", grpc.status.INVALID_ARGUMENT), null);
+      return;
+    }
+
+    if (processingDelayMs > 0) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, processingDelayMs);
+        timer.unref?.();
+      });
+    }
+
+    const attempt = resiliencyStore.increment(operationKey);
+    if (attempt.attemptCount <= failUntilAttempt) {
+      callback(
+        validationError(
+          `Injected ${retryableCode} for ${operationKey} on attempt ${attempt.attemptCount}`,
+          resiliencyCodeToStatus(retryableCode)
+        ),
+        null
+      );
+      return;
+    }
+
+    callback(null, {
+      operationKey,
+      attemptNumber: attempt.attemptCount,
+      outcome: "succeeded",
+      retryableCode,
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  },
+
+  GetAttemptSnapshot(
+    call: grpc.ServerUnaryCall<{ operationKey?: string }, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const authFailure = requireAuth(call.metadata, ["user", "service", "admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    const operationKey = String(call.request?.operationKey ?? "").trim();
+    const attempts = operationKey ? [resiliencyStore.get(operationKey)] : resiliencyStore.list();
+    callback(null, {
+      attempts,
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  },
+
+  ResetAttemptCounters(
+    call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ): void {
+    const authFailure = requireAuth(call.metadata, ["admin"]);
+    if (authFailure) {
+      callback(authFailure, null);
+      return;
+    }
+
+    const injected = maybeFail(call.metadata);
+    if (injected) {
+      callback(injected, null);
+      return;
+    }
+
+    callback(null, {
+      cleared: resiliencyStore.reset(),
+      correlationId: correlationIdFromMetadata(call.metadata)
+    });
+  }
+};
+
 const adminService = {
   GetSystemSnapshot(
     call: grpc.ServerUnaryCall<Record<string, never>, unknown>,
@@ -1428,6 +1567,9 @@ const adminService = {
       workflows: {
         runCount: workflowStore.list().length
       },
+      resiliency: {
+        trackedOperationCount: resiliencyStore.list().length
+      },
       correlationId: correlationIdFromMetadata(call.metadata)
     });
   },
@@ -1452,6 +1594,7 @@ const adminService = {
     const clearedAuditEvents = auditStore.reset();
     const clearedNotifications = notificationStore.reset();
     const clearedWorkflowRuns = workflowStore.reset();
+    const clearedResiliencyCounters = resiliencyStore.reset();
     store.reset();
     notificationSubscribers.clear();
 
@@ -1460,6 +1603,7 @@ const adminService = {
       clearedAuditEvents,
       clearedNotifications,
       clearedWorkflowRuns,
+      clearedResiliencyCounters,
       remainingInventoryReservations: store.reservationCount(),
       inventory: store.listStock(),
       correlationId: correlationIdFromMetadata(call.metadata)
@@ -1476,6 +1620,7 @@ export const __testables = {
   notificationService,
   adminService,
   workflowService,
+  resiliencyService,
   quoteResponse,
   orderResponse,
   auditEventResponse,
@@ -1500,6 +1645,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
   server.addService(notificationPackage.NotificationService.service, notificationService);
   server.addService(adminPackage.AdminService.service, adminService);
   server.addService(workflowPackage.WorkflowService.service, workflowService);
+  server.addService(resiliencyPackage.ResiliencyService.service, resiliencyService);
   new ReflectionService(packageDefinition).addToServer(server);
 
   const boundPort = await new Promise<number>((resolve, reject) => {
@@ -1512,7 +1658,7 @@ export async function startGrpcServer(port = Number(process.env.GRPC_PORT ?? 500
     });
   });
 
-  console.log(`gRPC inventory, pricing, order, audit, health, notification, admin, and workflow server running on ${boundPort}`);
+  console.log(`gRPC inventory, pricing, order, audit, health, notification, admin, workflow, and resiliency server running on ${boundPort}`);
 
   return {
     port: boundPort,
