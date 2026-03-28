@@ -13,6 +13,7 @@ import I18n from "./pages/I18n";
 import Files from "./pages/Files";
 import Experiments from "./pages/Experiments";
 import Integrations from "./pages/Integrations";
+import GrpcLab from "./pages/GrpcLab";
 import System from "./pages/System";
 import Mobile from "./pages/Mobile";
 import DebugPanel from "./components/DebugPanel";
@@ -32,6 +33,7 @@ const navItems = [
   { path: "/mobile", label: "Mobile" },
   { path: "/experiments", label: "Experiments" },
   { path: "/integrations", label: "Integrations" },
+  { path: "/grpc", label: "gRPC Lab" },
   { path: "/system", label: "System" }
 ];
 
@@ -150,6 +152,7 @@ export default function App() {
           <Route path="/mobile" element={<Mobile />} />
           <Route path="/experiments" element={<Experiments />} />
           <Route path="/integrations" element={<Integrations />} />
+          <Route path="/grpc" element={<GrpcLab />} />
           <Route path="/system" element={<System />} />
         </Routes>
       </main>
