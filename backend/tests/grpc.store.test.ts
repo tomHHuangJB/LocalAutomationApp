@@ -242,6 +242,20 @@ describe("gRPC stores", () => {
     expect(store.list()).toHaveLength(0);
   });
 
+  it("supports workflow cancellation as a terminal status", () => {
+    const store = new WorkflowStore();
+    store.create({
+      runId: "run-cancel",
+      orderId: "order-cancel",
+      sku: "SKU-RED-CHAIR",
+      quantity: 1,
+      currency: "USD"
+    });
+
+    store.setFinalStatus("run-cancel", "cancelled");
+    expect(store.getByOrderId("order-cancel").finalStatus).toBe("cancelled");
+  });
+
   it("raises workflow lookup errors for unknown run and order", () => {
     const store = new WorkflowStore();
     expect(() => store.getByRunId("missing-run")).toThrow("Unknown workflow run: missing-run");
