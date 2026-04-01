@@ -36,6 +36,22 @@ vi.mock("../hooks/useWebSocket", async () => {
 
 beforeEach(() => {
   vi.spyOn(Math, "random").mockReturnValue(0.9);
+  const storageState = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: vi.fn((key: string) => storageState.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        storageState.set(key, value);
+      }),
+      removeItem: vi.fn((key: string) => {
+        storageState.delete(key);
+      }),
+      clear: vi.fn(() => {
+        storageState.clear();
+      })
+    }
+  });
   if (!("PointerEvent" in window)) {
     Object.defineProperty(window, "PointerEvent", {
       configurable: true,
@@ -45,6 +61,20 @@ beforeEach(() => {
   apiFetchMock.mockReset();
   apiFetchMock.mockImplementation(async (input: RequestInfo, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/api/permissions")) {
+      return new Response(JSON.stringify({ geo: "prompt", notifications: "denied", clipboard: "granted" }), {
+        status: 200
+      });
+    }
+    if (url.includes("/api/roles")) {
+      return new Response(
+        JSON.stringify({
+          roles: ["viewer", "editor", "admin"],
+          permissions: { admin: ["all"], viewer: ["read"], editor: ["read", "write"] }
+        }),
+        { status: 200 }
+      );
+    }
     if (url.includes("/api/race?label=fast")) {
       return new Response(JSON.stringify({ delay: 200 }), { status: 200 });
     }
@@ -198,9 +228,58 @@ describe("Pages render", () => {
     expect(screen.getByTestId("grpc-reflection-tip")).toHaveTextContent("localhost:51051");
   });
 
-  it("System renders permission buttons", () => {
+  it("System renders permission buttons", async () => {
     render(<System />);
     expect(screen.getByTestId("perm-geo")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("perm-status-list")).toHaveTextContent("Clipboard: granted"));
+  });
+
+  it("System executes permission, dialog, popup, storage, and role flows", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1711987200000);
+    vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(window, "prompt").mockReturnValue("typed-value");
+    vi.spyOn(window, "open").mockReturnValue(window);
+
+    render(<System />);
+
+    await waitFor(() => expect(screen.getByTestId("role-permissions")).toHaveTextContent("read"));
+
+    fireEvent.click(screen.getByTestId("perm-geo"));
+    expect(screen.getByTestId("perm-result")).toHaveTextContent("Geolocation => granted");
+    expect(screen.getByTestId("perm-status-list")).toHaveTextContent("Geo: granted");
+
+    fireEvent.click(screen.getByTestId("dialog-alert"));
+    expect(screen.getByTestId("dialog-result")).toHaveTextContent("Alert acknowledged");
+
+    fireEvent.click(screen.getByTestId("dialog-confirm"));
+    expect(screen.getByTestId("dialog-result")).toHaveTextContent("Confirm => accepted");
+
+    fireEvent.click(screen.getByTestId("dialog-prompt"));
+    expect(screen.getByTestId("dialog-result")).toHaveTextContent("Prompt => typed-value");
+
+    fireEvent.click(screen.getByTestId("window-open"));
+    expect(screen.getByTestId("window-status")).toHaveTextContent("Popup opened");
+
+    fireEvent.click(screen.getByTestId("storage-write"));
+    expect(screen.getByTestId("storage-event")).toHaveTextContent("Local write: session-1711987200000");
+
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: "session",
+        newValue: "session-remote-sync"
+      })
+    );
+    expect(screen.getByTestId("storage-event")).toHaveTextContent("Storage event sync: session-remote-sync");
+
+    expect(screen.getByTestId("role-admin-visibility")).toHaveTextContent("hidden");
+    expect(screen.getByTestId("role-destructive-action")).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId("role-access-select"), { target: { value: "admin" } });
+    await waitFor(() => expect(screen.getByTestId("role-permissions")).toHaveTextContent("all"));
+    expect(screen.getByTestId("role-admin-visibility")).toHaveTextContent("visible");
+    expect(screen.getByTestId("role-destructive-action")).not.toBeDisabled();
   });
 
   it("Mobile renders gesture surface", () => {

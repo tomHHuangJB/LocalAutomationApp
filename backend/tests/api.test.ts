@@ -5,6 +5,29 @@ import { jest } from "@jest/globals";
 
 jest.setTimeout(10000);
 
+function closeServer(listener: ReturnType<typeof server.listen>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    listener.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function closeWebSocket(socket: WebSocket): Promise<void> {
+  return new Promise((resolve) => {
+    if (socket.readyState === WebSocket.CLOSED) {
+      resolve();
+      return;
+    }
+    socket.once("close", () => resolve());
+    socket.close();
+  });
+}
+
 describe("Local Automation Lab API", () => {
   it("returns health status", async () => {
     const res = await request(app).get("/health");
@@ -167,18 +190,29 @@ describe("Local Automation Lab API", () => {
     expect(res.text).toContain("message-1");
   });
 
-  it("accepts WebSocket connections when enabled", (done) => {
+  it("accepts WebSocket connections when enabled", async () => {
     process.env.ENABLE_WEBSOCKETS = "true";
-    const listener = server.listen(0, () => {
+    const listener = server.listen(0);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        listener.once("error", reject);
+        listener.once("listening", () => resolve());
+      });
       const address = listener.address();
       const port = typeof address === "string" ? 0 : address?.port;
       const ws = new WebSocket(`ws://localhost:${port}/ws`);
-      ws.on("message", (data) => {
-        expect(String(data)).toContain("Notification");
-        ws.close();
-        listener.close();
-        done();
-      });
-    });
+      try {
+        const message = await new Promise<string>((resolve, reject) => {
+          ws.once("error", reject);
+          ws.once("message", (data) => resolve(String(data)));
+        });
+        expect(message).toContain("Notification");
+      } finally {
+        await closeWebSocket(ws);
+      }
+    } finally {
+      process.env.ENABLE_WEBSOCKETS = "false";
+      await closeServer(listener);
+    }
   });
 });
