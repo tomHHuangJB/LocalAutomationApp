@@ -14,7 +14,10 @@ vi.mock("../hooks/useWebSocket", async () => {
 describe("App shell", () => {
   it("renders navigation and routes", () => {
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <App />
       </MemoryRouter>
     );
@@ -37,6 +40,7 @@ describe("DebugPanel", () => {
 
 describe("ErrorBoundary", () => {
   it("catches render errors", () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const Boom = () => {
       throw new Error("boom");
     };
@@ -46,5 +50,6 @@ describe("ErrorBoundary", () => {
       </ErrorBoundary>
     );
     expect(screen.getByTestId("error-boundary")).toHaveTextContent("boom");
+    consoleErrorSpy.mockRestore();
   });
 });
