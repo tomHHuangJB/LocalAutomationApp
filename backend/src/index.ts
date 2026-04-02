@@ -18,7 +18,12 @@ db.serialize(() => {
   db.run("INSERT INTO users (name, role) VALUES ('principal', 'admin'), ('senior', 'editor'), ('viewer', 'viewer')");
 });
 
-app.use(cors({ origin: process.env.ALLOW_CORS_FROM ?? "*" }));
+app.use(
+  cors({
+    origin: process.env.ALLOW_CORS_FROM ?? "*",
+    exposedHeaders: ["X-Checksum-Sha256", "X-Correlation-ID"]
+  })
+);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json());
 app.use((req, res, next) => {
