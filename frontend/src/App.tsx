@@ -1,5 +1,5 @@
 import React from "react";
-import { Routes, Route, NavLink } from "react-router-dom";
+import { Routes, Route, NavLink, useLocation } from "react-router-dom";
 import Home from "./pages/Home";
 import Auth from "./pages/Auth";
 import Forms from "./pages/Forms";
@@ -17,6 +17,7 @@ import GrpcLab from "./pages/GrpcLab";
 import System from "./pages/System";
 import Mobile from "./pages/Mobile";
 import DebugPanel from "./components/DebugPanel";
+import EffizienteCompat from "./pages/EffizienteCompat";
 
 const navItems = [
   { path: "/", label: "Dashboard" },
@@ -38,13 +39,49 @@ const navItems = [
 ];
 
 export default function App() {
+  const location = useLocation();
   const [isMegaMenuOpen, setIsMegaMenuOpen] = React.useState(false);
+  const isEffizienteCompatRoute = location.pathname.startsWith("/compat/effiziente");
 
   const handleMegaMenuBlur = (event: React.FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
       setIsMegaMenuOpen(false);
     }
   };
+
+  const routeElements = (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/auth" element={<Auth />} />
+      <Route path="/forms" element={<Forms />} />
+      <Route path="/components" element={<Components />} />
+      <Route path="/tables" element={<Tables />} />
+      <Route path="/dynamic" element={<Dynamic />} />
+      <Route path="/errors" element={<Errors />} />
+      <Route path="/performance" element={<Performance />} />
+      <Route path="/a11y" element={<A11y />} />
+      <Route path="/i18n" element={<I18n />} />
+      <Route path="/files" element={<Files />} />
+      <Route path="/mobile" element={<Mobile />} />
+      <Route path="/experiments" element={<Experiments />} />
+      <Route path="/integrations" element={<Integrations />} />
+      <Route path="/grpc" element={<GrpcLab />} />
+      <Route path="/system" element={<System />} />
+      <Route path="/compat/effiziente/*" element={<EffizienteCompat />} />
+    </Routes>
+  );
+
+  if (isEffizienteCompatRoute) {
+    return (
+      <div className="min-h-screen text-ink">
+        <a href="#main" className="sr-only focus:not-sr-only" data-testid="skip-link">
+          Skip to content
+        </a>
+        <main id="main">{routeElements}</main>
+        <DebugPanel />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen text-ink">
@@ -137,24 +174,7 @@ export default function App() {
         </div>
       </header>
       <main id="main" className="mx-auto max-w-6xl px-6 py-8">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/auth" element={<Auth />} />
-          <Route path="/forms" element={<Forms />} />
-          <Route path="/components" element={<Components />} />
-          <Route path="/tables" element={<Tables />} />
-          <Route path="/dynamic" element={<Dynamic />} />
-          <Route path="/errors" element={<Errors />} />
-          <Route path="/performance" element={<Performance />} />
-          <Route path="/a11y" element={<A11y />} />
-          <Route path="/i18n" element={<I18n />} />
-          <Route path="/files" element={<Files />} />
-          <Route path="/mobile" element={<Mobile />} />
-          <Route path="/experiments" element={<Experiments />} />
-          <Route path="/integrations" element={<Integrations />} />
-          <Route path="/grpc" element={<GrpcLab />} />
-          <Route path="/system" element={<System />} />
-        </Routes>
+        {routeElements}
       </main>
       <DebugPanel />
     </div>
