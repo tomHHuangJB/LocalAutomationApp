@@ -43,8 +43,14 @@ describe("Local Automation Lab API", () => {
   });
 
   it("covers auth and session endpoints", async () => {
+    const agent = request.agent(app);
+    const login = await agent.post("/api/auth/login").send({ username: "principal.engineer", password: "demo" });
+    expect(login.status).toBe(200);
+
+    expect((await agent.post("/api/auth/refresh")).status).toBe(200);
+    expect((await agent.get("/api/auth/me")).status).toBe(200);
+    expect((await request(app).post("/api/auth/refresh")).status).toBe(401);
     expect((await request(app).post("/api/auth/logout")).status).toBe(200);
-    expect((await request(app).post("/api/auth/refresh")).status).toBe(200);
     expect((await request(app).get("/api/auth/sessions")).status).toBe(200);
     expect((await request(app).post("/api/auth/forgot")).status).toBe(200);
     expect((await request(app).post("/api/auth/reset")).status).toBe(200);
@@ -164,6 +170,115 @@ describe("Local Automation Lab API", () => {
       totalAmount: 42,
       status: "CREATED"
     });
+  });
+
+  it("exposes DB inspection, ETL run, and warehouse facts for data testing", async () => {
+    await request(app).post("/api/reset");
+
+    const createPayload = {
+      customer: {
+        externalId: "cust-etl-001",
+        name: "ETL Customer",
+        email: "etl.customer@example.com"
+      },
+      items: [
+        { sku: "ETF-AAA", quantity: 4, unitPrice: 3.25 },
+        { sku: "ETF-BBB", quantity: 1, unitPrice: 9.5 }
+      ],
+      payment: {
+        provider: "warehouse-pay",
+        authorizationCode: "AUTH-ETL"
+      },
+      currency: "USD"
+    };
+
+    const created = await request(app)
+      .post("/api/business-flow/orders")
+      .set("X-Correlation-ID", "corr-etl-001")
+      .send(createPayload);
+
+    expect(created.status).toBe(201);
+    expect(created.body.orderId).toBeDefined();
+    expect(created.body.totalAmount).toBe(22.5);
+
+    const tableRows = await request(app).get(`/api/test/db/orders/${created.body.orderId}/tables`);
+    expect(tableRows.status).toBe(200);
+    expect(tableRows.body.dbPath).toBeDefined();
+    expect(tableRows.body.tables.customers[0]).toMatchObject({
+      external_id: "cust-etl-001",
+      name: "ETL Customer",
+      email: "etl.customer@example.com"
+    });
+    expect(tableRows.body.tables.orders[0]).toMatchObject({
+      id: created.body.orderId,
+      correlation_id: "corr-etl-001",
+      total_amount: 22.5
+    });
+    expect(tableRows.body.tables.items).toHaveLength(2);
+    expect(tableRows.body.tables.payments[0]).toMatchObject({
+      provider: "warehouse-pay",
+      amount: 22.5,
+      authorization_code: "AUTH-ETL"
+    });
+    expect(tableRows.body.tables.downstreamEvents[0]).toMatchObject({
+      delivery_status: "DELIVERED",
+      attempt_count: 1
+    });
+
+    const namedQuery = await request(app).get("/api/test/db/query?name=business_order_integrity");
+    expect(namedQuery.status).toBe(200);
+    expect(namedQuery.body.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          order_id: created.body.orderId,
+          correlation_id: "corr-etl-001",
+          customer_external_id: "cust-etl-001",
+          order_total: 22.5,
+          item_total: 22.5,
+          payment_total: 22.5,
+          item_count: 2,
+          downstream_event_count: 1
+        })
+      ])
+    );
+
+    const etl = await request(app).post("/api/etl/run/orders");
+    expect(etl.status).toBe(201);
+    expect(etl.body.run).toMatchObject({
+      status: "COMPLETED",
+      source_count: 1,
+      target_count: 1,
+      error_count: 0
+    });
+
+    const run = await request(app).get(`/api/etl/runs/${etl.body.run.id}`);
+    expect(run.status).toBe(200);
+    expect(run.body.run.id).toBe(etl.body.run.id);
+    expect(run.body.errors).toEqual([]);
+
+    const warehouse = await request(app).get(`/api/warehouse/orders/${created.body.orderNumber}`);
+    expect(warehouse.status).toBe(200);
+    expect(warehouse.body).toMatchObject({
+      source_order_id: created.body.orderId,
+      order_number: created.body.orderNumber,
+      correlation_id: "corr-etl-001",
+      customer_external_id: "cust-etl-001",
+      item_count: 2,
+      total_quantity: 5,
+      total_amount: 22.5,
+      payment_amount: 22.5,
+      downstream_event_count: 1,
+      data_quality_status: "PASS"
+    });
+
+    const warehouseRows = await request(app).get("/api/warehouse/orders");
+    expect(warehouseRows.status).toBe(200);
+    expect(warehouseRows.body.rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source_order_id: created.body.orderId })])
+    );
+
+    const unknownQuery = await request(app).get("/api/test/db/query?name=missing");
+    expect(unknownQuery.status).toBe(400);
   });
 
   it("validates business data flow create payloads", async () => {
