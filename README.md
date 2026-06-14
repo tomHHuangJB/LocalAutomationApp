@@ -89,6 +89,11 @@ Profile behavior (backend):
 - WebSocket real-time events with heartbeat and reconnect behaviors.
 - In-memory SQLite for safe SQL injection practice.
 - Configurable slow/flaky/overload profiles.
+- Business data-flow lab for API/data-integrity automation practice:
+  - `POST /api/business-flow/orders` creates business data and persists it across normalized SQLite tables: customers, orders, order items, payments, status history, and downstream consumer events.
+  - `GET /api/business-flow/orders/:id/integrity` validates persistence integrity across those tables, including item totals, payment totals, status history, and downstream delivery.
+  - `GET /api/business-flow/orders/:id` reconstructs the original business object from normalized tables for API response comparison.
+  - `GET /api/downstream/consumer-events/:correlationId` verifies that the downstream consumer received the data-flow event.
 
 ### Security & OWASP Practice
 - Injection labs (SQL/NoSQL/OS), broken access control, XSS toggles.

@@ -43,8 +43,14 @@ describe("Local Automation Lab API", () => {
   });
 
   it("covers auth and session endpoints", async () => {
+    const agent = request.agent(app);
+    const login = await agent.post("/api/auth/login").send({ username: "principal.engineer", password: "demo" });
+    expect(login.status).toBe(200);
+
+    expect((await agent.post("/api/auth/refresh")).status).toBe(200);
+    expect((await agent.get("/api/auth/me")).status).toBe(200);
+    expect((await request(app).post("/api/auth/refresh")).status).toBe(401);
     expect((await request(app).post("/api/auth/logout")).status).toBe(200);
-    expect((await request(app).post("/api/auth/refresh")).status).toBe(200);
     expect((await request(app).get("/api/auth/sessions")).status).toBe(200);
     expect((await request(app).post("/api/auth/forgot")).status).toBe(200);
     expect((await request(app).post("/api/auth/reset")).status).toBe(200);
@@ -77,6 +83,210 @@ describe("Local Automation Lab API", () => {
     expect((await request(app).get("/api/pagination")).status).toBe(200);
     const idempotent = await request(app).post("/api/idempotent").set("Idempotency-Key", "demo");
     expect(idempotent.status).toBe(200);
+  });
+
+  it("supports business data flow integrity across normalized tables and downstream consumer", async () => {
+    const createPayload = {
+      customer: {
+        externalId: "cust-integrity-001",
+        name: "Integrity Customer",
+        email: "integrity.customer@example.com"
+      },
+      items: [
+        { sku: "BOND-AAA", quantity: 2, unitPrice: 10.5 },
+        { sku: "BOND-BBB", quantity: 3, unitPrice: 7 }
+      ],
+      payment: {
+        provider: "test-pay",
+        authorizationCode: "AUTH-INTEGRITY"
+      },
+      currency: "USD"
+    };
+
+    const created = await request(app)
+      .post("/api/business-flow/orders")
+      .set("X-Correlation-ID", "corr-integrity-001")
+      .send(createPayload);
+
+    expect(created.status).toBe(201);
+    expect(created.body.orderId).toBeDefined();
+    expect(created.body.correlationId).toBe("corr-integrity-001");
+    expect(created.body.totalAmount).toBe(42);
+    expect(created.body.persistedTables).toEqual(
+      expect.arrayContaining([
+        "business_customers",
+        "business_orders",
+        "business_order_items",
+        "business_payments",
+        "business_order_status_history",
+        "downstream_consumer_events"
+      ])
+    );
+
+    const integrity = await request(app).get(`/api/business-flow/orders/${created.body.orderId}/integrity`);
+    expect(integrity.status).toBe(200);
+    expect(integrity.body.passed).toBe(true);
+    expect(integrity.body.tableCounts).toMatchObject({
+      customers: 1,
+      orders: 1,
+      items: 2,
+      payments: 1,
+      downstreamEvents: 1
+    });
+    expect(integrity.body.calculated).toMatchObject({
+      itemTotal: 42,
+      paymentTotal: 42,
+      orderTotal: 42
+    });
+
+    const loaded = await request(app).get(`/api/business-flow/orders/${created.body.orderId}`);
+    expect(loaded.status).toBe(200);
+    expect(loaded.body.customer).toMatchObject(createPayload.customer);
+    expect(loaded.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sku: "BOND-AAA", quantity: 2, unitPrice: 10.5, lineTotal: 21 }),
+        expect.objectContaining({ sku: "BOND-BBB", quantity: 3, unitPrice: 7, lineTotal: 21 })
+      ])
+    );
+    expect(loaded.body.payments[0]).toMatchObject({
+      provider: "test-pay",
+      amount: 42,
+      status: "AUTHORIZED",
+      authorizationCode: "AUTH-INTEGRITY"
+    });
+
+    const downstream = await request(app).get(`/api/downstream/consumer-events/${created.body.correlationId}`);
+    expect(downstream.status).toBe(200);
+    expect(downstream.body.events[0]).toMatchObject({
+      orderId: created.body.orderId,
+      consumerName: "portfolio-risk-consumer",
+      eventType: "ORDER_CREATED"
+    });
+    expect(downstream.body.events[0].payload).toMatchObject({
+      correlationId: "corr-integrity-001",
+      orderId: created.body.orderId,
+      itemCount: 2,
+      totalQuantity: 5,
+      totalAmount: 42,
+      status: "CREATED"
+    });
+  });
+
+  it("exposes DB inspection, ETL run, and warehouse facts for data testing", async () => {
+    await request(app).post("/api/reset");
+
+    const createPayload = {
+      customer: {
+        externalId: "cust-etl-001",
+        name: "ETL Customer",
+        email: "etl.customer@example.com"
+      },
+      items: [
+        { sku: "ETF-AAA", quantity: 4, unitPrice: 3.25 },
+        { sku: "ETF-BBB", quantity: 1, unitPrice: 9.5 }
+      ],
+      payment: {
+        provider: "warehouse-pay",
+        authorizationCode: "AUTH-ETL"
+      },
+      currency: "USD"
+    };
+
+    const created = await request(app)
+      .post("/api/business-flow/orders")
+      .set("X-Correlation-ID", "corr-etl-001")
+      .send(createPayload);
+
+    expect(created.status).toBe(201);
+    expect(created.body.orderId).toBeDefined();
+    expect(created.body.totalAmount).toBe(22.5);
+
+    const tableRows = await request(app).get(`/api/test/db/orders/${created.body.orderId}/tables`);
+    expect(tableRows.status).toBe(200);
+    expect(tableRows.body.dbPath).toBeDefined();
+    expect(tableRows.body.tables.customers[0]).toMatchObject({
+      external_id: "cust-etl-001",
+      name: "ETL Customer",
+      email: "etl.customer@example.com"
+    });
+    expect(tableRows.body.tables.orders[0]).toMatchObject({
+      id: created.body.orderId,
+      correlation_id: "corr-etl-001",
+      total_amount: 22.5
+    });
+    expect(tableRows.body.tables.items).toHaveLength(2);
+    expect(tableRows.body.tables.payments[0]).toMatchObject({
+      provider: "warehouse-pay",
+      amount: 22.5,
+      authorization_code: "AUTH-ETL"
+    });
+    expect(tableRows.body.tables.downstreamEvents[0]).toMatchObject({
+      delivery_status: "DELIVERED",
+      attempt_count: 1
+    });
+
+    const namedQuery = await request(app).get("/api/test/db/query?name=business_order_integrity");
+    expect(namedQuery.status).toBe(200);
+    expect(namedQuery.body.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          order_id: created.body.orderId,
+          correlation_id: "corr-etl-001",
+          customer_external_id: "cust-etl-001",
+          order_total: 22.5,
+          item_total: 22.5,
+          payment_total: 22.5,
+          item_count: 2,
+          downstream_event_count: 1
+        })
+      ])
+    );
+
+    const etl = await request(app).post("/api/etl/run/orders");
+    expect(etl.status).toBe(201);
+    expect(etl.body.run).toMatchObject({
+      status: "COMPLETED",
+      source_count: 1,
+      target_count: 1,
+      error_count: 0
+    });
+
+    const run = await request(app).get(`/api/etl/runs/${etl.body.run.id}`);
+    expect(run.status).toBe(200);
+    expect(run.body.run.id).toBe(etl.body.run.id);
+    expect(run.body.errors).toEqual([]);
+
+    const warehouse = await request(app).get(`/api/warehouse/orders/${created.body.orderNumber}`);
+    expect(warehouse.status).toBe(200);
+    expect(warehouse.body).toMatchObject({
+      source_order_id: created.body.orderId,
+      order_number: created.body.orderNumber,
+      correlation_id: "corr-etl-001",
+      customer_external_id: "cust-etl-001",
+      item_count: 2,
+      total_quantity: 5,
+      total_amount: 22.5,
+      payment_amount: 22.5,
+      downstream_event_count: 1,
+      data_quality_status: "PASS"
+    });
+
+    const warehouseRows = await request(app).get("/api/warehouse/orders");
+    expect(warehouseRows.status).toBe(200);
+    expect(warehouseRows.body.rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source_order_id: created.body.orderId })])
+    );
+
+    const unknownQuery = await request(app).get("/api/test/db/query?name=missing");
+    expect(unknownQuery.status).toBe(400);
+  });
+
+  it("validates business data flow create payloads", async () => {
+    const res = await request(app).post("/api/business-flow/orders").send({ customer: { name: "Missing fields" } });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION");
+    expect(res.body.error.details.errors).toContain("customer.externalId is required");
+    expect(res.body.error.details.errors).toContain("at least one item is required");
   });
 
   it("covers consistency and partial content", async () => {
