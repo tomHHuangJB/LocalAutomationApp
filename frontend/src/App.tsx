@@ -18,10 +18,12 @@ import System from "./pages/System";
 import Mobile from "./pages/Mobile";
 import DebugPanel from "./components/DebugPanel";
 import EffizienteCompat from "./pages/EffizienteCompat";
+import Protected from "./pages/Protected";
 
 const navItems = [
   { path: "/", label: "Dashboard" },
   { path: "/auth", label: "Auth" },
+  { path: "/protected", label: "Protected" },
   { path: "/forms", label: "Forms" },
   { path: "/components", label: "Components" },
   { path: "/tables", label: "Tables" },
@@ -53,6 +55,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/auth" element={<Auth />} />
+      <Route path="/protected" element={<Protected />} />
       <Route path="/forms" element={<Forms />} />
       <Route path="/components" element={<Components />} />
       <Route path="/tables" element={<Tables />} />

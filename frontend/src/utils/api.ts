@@ -20,7 +20,7 @@ export async function apiFetch(input: RequestInfo, init?: RequestInit) {
     return new Response(mock, { status: 200, headers: { "Content-Type": "application/json" } });
   }
   const start = performance.now();
-  const response = await fetch(input, init);
+  const response = await fetch(input, { credentials: "include", ...init });
   const clone = response.clone();
   const bodyText = await clone.text();
   window.__API_RESPONSES?.push({

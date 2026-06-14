@@ -3,6 +3,8 @@ import Section from "../components/Section";
 import { apiFetch, API_BASE } from "../utils/api";
 
 export default function Auth() {
+  const [username, setUsername] = useState("principal.engineer");
+  const [password, setPassword] = useState("demo");
   const [mfaCode, setMfaCode] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
   const [authStatus, setAuthStatus] = useState("idle");
@@ -12,15 +14,52 @@ export default function Auth() {
     const response = await apiFetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "principal.engineer", password: "demo" })
-    }).then((res) => res.json());
-    setAuthStatus(`token:${response.token}`);
+      body: JSON.stringify({ username, password, rememberMe })
+    });
+
+    const body = await response.json();
+    if (!response.ok) {
+      setAuthStatus(`error:${body.error?.code ?? response.status}`);
+      return;
+    }
+
+    localStorage.setItem("authToken", body.token);
+    localStorage.setItem("refreshToken", body.refreshToken);
+    localStorage.setItem("authUser", body.user);
+    localStorage.setItem("authRole", body.role);
+    setAuthStatus(`token:${body.token};user:${body.user};role:${body.role}`);
   };
 
   const verifyMfa = async () => {
     setAuthStatus("verifying-mfa");
-    const response = await apiFetch(`${API_BASE}/api/auth/refresh`, { method: "POST" }).then((res) => res.json());
-    setAuthStatus(`refresh:${response.refreshToken}`);
+    const response = await apiFetch(`${API_BASE}/api/auth/refresh`, { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      setAuthStatus(`refresh-error:${body.error?.code ?? response.status}`);
+      return;
+    }
+    localStorage.setItem("authToken", body.token);
+    localStorage.setItem("refreshToken", body.refreshToken);
+    setAuthStatus(`refresh:${body.refreshToken}`);
+  };
+
+  const checkSession = async () => {
+    const response = await apiFetch(`${API_BASE}/api/auth/me`);
+    const body = await response.json();
+    if (!response.ok) {
+      setAuthStatus(`me-error:${body.error?.code ?? response.status}`);
+      return;
+    }
+    setAuthStatus(`me:${body.user};role:${body.role}`);
+  };
+
+  const logout = async () => {
+    await apiFetch(`${API_BASE}/api/auth/logout`, { method: "POST" });
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("refreshToken");
+    localStorage.removeItem("authUser");
+    localStorage.removeItem("authRole");
+    setAuthStatus("logged-out");
   };
 
   return (
@@ -33,6 +72,8 @@ export default function Auth() {
               className="mt-1 w-full rounded border border-black/20 p-2"
               name="username"
               placeholder="principal.engineer"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
               data-testid="login-username"
             />
           </label>
@@ -43,6 +84,8 @@ export default function Auth() {
               className="mt-1 w-full rounded border border-black/20 p-2"
               name="password"
               placeholder="••••••••"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               data-testid="login-password"
             />
           </label>
@@ -66,6 +109,24 @@ export default function Auth() {
             Sign in
           </button>
         </form>
+        <div className="mt-3 flex flex-wrap gap-3">
+          <button
+            type="button"
+            className="rounded border border-black/20 px-4 py-2"
+            data-testid="session-check"
+            onClick={checkSession}
+          >
+            Check session
+          </button>
+          <button
+            type="button"
+            className="rounded border border-black/20 px-4 py-2"
+            data-testid="logout-submit"
+            onClick={logout}
+          >
+            Logout
+          </button>
+        </div>
         <div className="mt-2 text-xs text-black/60" data-testid="auth-status">{authStatus}</div>
       </Section>
 
